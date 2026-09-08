@@ -88,67 +88,102 @@ app can use it, and pretending otherwise would silently show the wrong thing:
 
 ---
 
-## What is missing
+## What was missing, and what now exists
 
-Three things stand between the ledger and the unified view.
+All three are built. What follows is what each turned out to be once the code
+was read rather than guessed at — the guesses were wrong in interesting ways.
 
-### 1. Provenance for entries this app did not write
+### 1. Provenance — `lib/provenance.ts`
 
-The ledger shows `via Tickets Board` for its own entries because it stamped
-them. A message that arrived from Xyne itself, an email that came into a desk
-ticket, a PR comment mirrored by a webhook — those carry no marker, and today
-they render as plain messages from a person.
+The plan said `docType` would supply it. That is true for the Related pane, and
+false for the thread: a message has no `docType`. There is no `source` column on
+`messages` either — the row has nineteen columns and not one names an origin.
 
-`search.query` already answers this, and it was verified live against the
-workspace:
+Three real signals, in the order the dashboard itself trusts them:
 
-```
-search.query({ q: 'pricing' })  ->  200,  totalCount: 2021
-  group docType=file   count 10
-  group docType=ticket count 10
-  group docType=mail   count  9
-```
+- **`channel.type`** — `DEFAULT | EMAIL | SUPPORT | SLACK | APP | CALL |
+  SOCIAL_MEDIA | SDLC`. Xyne's own SupportScreen badges from exactly this, and
+  it is the only signal that is right for slack-desk, whose messages are
+  deliberately transformed into Email rows. Counted live here: DEFAULT 1063,
+  EMAIL 10, APP 2, SDLC/SUPPORT/SLACK 1 each.
+- **`message.metadata`** — rich on read, forced to null only on WRITE. The
+  ingestion pipeline stamps `{ externalSource, externalAuthor, eventType,
+  webUrl }`; PR webhooks add `{ prWebhook, prUrl, prId, prEvent }`; automations
+  add `{ isAutomation, releaseStatus }`.
+- **`msgType`** — `USER | BOT | SYSTEM | FORWARDED`, which says *who* wrote a
+  line, never *where it came from*. Every ingested message is BOT, but so is
+  every automation and call summary, so BOT alone proves nothing.
 
-**`docType` is provenance.** `mail` → "via Email", `chat` → "via Chat",
-`call` → "via Call", `file` → "via Drive". It is a field that already exists;
-nothing needs to be inferred.
+The badge vocabulary is closed on purpose. The live adapter registry is zoho,
+slack-webhook-tickets, slack-desk, microsoft, google, ozonetel and
+google-play-reviews, plus app-desk. **There is no GitHub, Jira, Drive or Notion
+ingest** — Jira and Confluence exist only as one-shot importers. A "via Jira"
+badge would advertise an integration the product does not have.
 
-### 2. The chain of connections
+Two facts that shaped the row: `contentFormat` is markdown roughly three times
+as often as html, so the renderer handles both; and department is
+`user_profiles.team` via `users.getProfiles`, not on the user row at all.
 
-**`relevanceScore` is the connection.** "What else relates to this ticket?" is a
-query, not a graph traversal — which is why this needs no `sdlc_entity_links`
-table and no backend.
+### 2. The chain of connections — `lib/related.ts`
 
-Seed `search.query` from the ticket's title and the distinctive tokens in its
-conversation; rank by `relevanceScore`; group by `docType`. That produces the
-candidate set for a **Related** pane: the emails, files, calls and other tickets
-that plausibly belong to this piece of work, each already badged with where it
-came from.
+Confirmed live. `search.query({ q })` returns `groups[{ groupBy: 'docType',
+groupValue, count, results }]`, and each hit carries `title`, `subtitle`,
+`context`, `relevanceScore` and a `searchContext` with the ids to open it.
 
-Computed, not declared — so it stays current without anyone maintaining it.
+Two corrections to the plan:
+
+- The parameter is **`q`**, not `query`.
+- **`ticketId` is not a usable scope.** The filter is accepted, but measured
+  against a real ticket it constrains only the ticket index — the other buckets
+  came back with ten unrelated users and ten unrelated files. Relevance is the
+  only honest filter, which is why the seed does the work: drop stopwords and
+  anything under four characters, keep the rare vocabulary, lead with the ticket
+  key. `"EULER-80740 moneyframework merchant funded"` returns the four other
+  MoneyFramework tickets at 0.84–0.89.
+
+Hits also arrive with `<hi>` highlight markup, which is stripped rather than
+rendered.
 
 ### 3. Curation
 
-Search proposes; a person decides. A one-click **pin** promotes a candidate to a
-confirmed relation on this ticket.
-
-Two storage options, and the choice is not obvious:
-
-- `tickets.addReference(...)` — a **real** cross-ticket relation, visible in
-  Xyne itself. Ticket-to-ticket only.
-- `storage.collection('related').put(...)` at `global` scope — holds any
-  `docType`, shared by every viewer, but invisible outside this app.
-
-Use the first where it fits and the second only where it does not, rather than
-putting everything in app storage because it is uniform. A relation that shows
-up in Xyne is worth more than a relation that is tidy.
-
-Storage is **key-addressed only** — no queries over values — so anything you
-need to filter on must be encoded in the key (`related:{ticketId}:{refId}`).
-`global` scope has no locking, so keep writes small and field-scoped: one
-document per relation, not one document per ticket.
+`Link` writes the connection into the ticket's own conversation, the same place
+every app writes. Chosen over app storage because a relation Xyne itself can see
+outlives this app.
 
 ---
+
+## Agents, and the one thing that is not reachable
+
+**`claw.getRun()` returns far more than its type admits.** `ClawRun` declares
+four fields; the registry entry sets no `mapResult` and every hop passes the
+object through, so what arrives is the whole `AgentRun` row — including
+`toolInvocations`, each with `toolName`, `args`, `result`, `isError`,
+`durationMs` and `status`. That is what makes an itemised account of the agent's
+work possible instead of a spinner. It is polled: Xyne's real SSE streaming
+(`snapshot | delta | reasoning | invocation | label | done`) is
+dashboard-internal and the SDK has no streaming primitive.
+
+**Awakening — Xyne's autonomous agent feature — is real and unreachable.** An
+agent's config carries an `awakening` block; a tick worker claims due agents
+with `FOR UPDATE SKIP LOCKED`, collects a sealed window of channel messages, and
+runs an ordered gate before dispatching. But the string "awakening" appears zero
+times in `apps/backend/src` (the only service the SDK talks to) and zero times
+in the SDK dist; `sdk.claw` is four methods; `ClawAgent` has no `config`; and
+`POST /api/sdk/v1/claw/runs` validates a closed five-field body. We cannot
+enable it, and cannot even read whether it is on.
+
+So `lib/watcher.ts` reimplements the part an app can do, and the UI says
+"while this ticket is open in a browser" rather than claiming otherwise. It
+keeps three rules from Awakening's own design: the watermark is held 30s behind
+now so it cannot step over unreplicated rows; runs are capped at four an hour;
+and the gate is ordered and deterministic — mention, then code event, then a
+question left open ten minutes — so a person can predict what will wake it.
+
+The platform-native alternative, if server-side autonomy is ever needed, is
+`automations.*` with a `RUN_AGENT` step on `MESSAGE_RECEIVED`. Two traps there:
+`configJson` must be `JSON.stringify`'d despite being typed `unknown`, and
+nothing runs until a four-step approval lifecycle completes. There is no CRON
+trigger implemented, so Awakening's heartbeat has no equivalent.
 
 ## The shape it should take
 

@@ -94,8 +94,104 @@ function looksLikeHtml(s: string): boolean {
   return /<[a-z][\s\S]*>/i.test(s);
 }
 
-export function RichText({ html }: { html: string }) {
+/**
+ * Inline markdown: `**bold**`, `*em*`, `` `code` ``, `[text](url)`, bare URLs.
+ *
+ * Hand-rolled rather than a library, and the reason is the publish cap: the
+ * smallest credible markdown renderer is larger than the 64 KB a single file
+ * may be. This covers what messages in this workspace actually contain — it is
+ * deliberately not a spec-complete implementation, and anything it does not
+ * recognise passes through as the literal text the author typed, which is the
+ * correct failure for a chat message.
+ */
+function inlineMd(text: string, out: ReactNode[], key: { n: number }): void {
+  // One pass, alternation ordered so `**` is tried before `*`.
+  const re = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|(`+)([^`]+)\3|\*\*([^*]+)\*\*|\*([^*\n]+)\*|(https?:\/\/[^\s<>()]+)/g;
+  let last = 0;
+  for (let m = re.exec(text); m; m = re.exec(text)) {
+    if (m.index > last) out.push(text.slice(last, m.index));
+    const [, linkText, linkHref, , code, bold, em, bareUrl] = m;
+    if (linkHref) {
+      out.push(<Link key={`l${key.n++}`} href={linkHref} text={linkText} />);
+    } else if (code) {
+      out.push(
+        <code
+          key={`c${key.n++}`}
+          className="rounded px-1 py-px"
+          style={{ fontFamily: mono, fontSize: '11.5px', background: c.ink }}
+        >
+          {code}
+        </code>,
+      );
+    } else if (bold) {
+      out.push(<strong key={`s${key.n++}`} className="font-semibold">{bold}</strong>);
+    } else if (em) {
+      out.push(<em key={`e${key.n++}`}>{em}</em>);
+    } else if (bareUrl) {
+      out.push(<Link key={`u${key.n++}`} href={bareUrl} text={bareUrl} />);
+    }
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) out.push(text.slice(last));
+}
+
+function Link({ href, text }: { href: string; text: string }) {
+  // Same rule as the HTML path: only http(s) is ever made clickable.
+  if (!/^https?:\/\//i.test(href)) return <span>{text}</span>;
+  return (
+    <a href={href} target="_blank" rel="noopener noreferrer" style={{ color: c.signal, textDecoration: 'underline' }}>
+      {text}
+    </a>
+  );
+}
+
+function renderMarkdown(src: string): ReactNode[] {
+  const out: ReactNode[] = [];
+  const key = { n: 0 };
+  const lines = src.split('\n');
+  lines.forEach((line, i) => {
+    const heading = /^(#{1,6})\s+(.*)$/.exec(line);
+    const bullet = /^\s*[-*+]\s+(.*)$/.exec(line);
+    if (heading) {
+      const inner: ReactNode[] = [];
+      inlineMd(heading[2], inner, key);
+      out.push(
+        <span key={`h${key.n++}`} className="block font-semibold" style={{ marginTop: i ? '0.5em' : 0 }}>
+          {inner}
+        </span>,
+      );
+      return;
+    }
+    if (bullet) {
+      const inner: ReactNode[] = [];
+      inlineMd(bullet[1], inner, key);
+      out.push(
+        <span key={`li${key.n++}`} className="block" style={{ paddingLeft: '1em', textIndent: '-1em' }}>
+          {'• '}
+          {inner}
+        </span>,
+      );
+      return;
+    }
+    inlineMd(line, out, key);
+    if (i < lines.length - 1) out.push(<br key={`br${key.n++}`} />);
+  });
+  return out;
+}
+
+/**
+ * Render a message body.
+ *
+ * `format` matters: messages in this workspace are markdown roughly three times
+ * as often as they are HTML (`metadata.contentFormat`), and running markdown
+ * through the HTML path shows the reader `**PR Check Available**` verbatim.
+ * Left unset it sniffs, which is right for callers that never had the metadata.
+ */
+export function RichText({ html, format }: { html: string; format?: 'markdown' | 'html' }) {
   if (!html) return null;
+
+  const mode = format ?? (looksLikeHtml(html) ? 'html' : 'markdown');
+  if (mode === 'markdown') return <>{renderMarkdown(html)}</>;
   if (!looksLikeHtml(html)) return <>{html}</>;
 
   try {
@@ -125,6 +221,13 @@ export function toPreview(html: string, max = 160): string {
       text = html.replace(/<[^>]+>/g, ' ');
     }
   }
-  const clean = text.replace(/\s+/g, ' ').trim();
+  const clean = text
+    // Markdown leaks into previews the same way it leaked into bodies.
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '$1')
+    .replace(/(\*\*|`)/g, '')
+    .replace(/^\s*[-*+]\s+/gm, '')
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/\s+/g, ' ')
+    .trim();
   return clean.length > max ? `${clean.slice(0, max)}…` : clean;
 }

@@ -12,9 +12,29 @@
  */
 import { rawOp, xyne } from './xyne';
 
-export type Person = { id: string; name: string; picture?: string; isBot?: boolean };
+export type Person = {
+  id: string;
+  name: string;
+  picture?: string;
+  isBot?: boolean;
+  /**
+   * Job title and team, e.g. "Product Engineer - I" of "Infosec".
+   *
+   * These are the second line of a message row — the reference product shows
+   * "Priya · Marketing" — and they are NOT on the user row. `users.listBasic`
+   * returns the workspace User, whose `role` is a permission level (MEMBER /
+   * ADMIN), not a job. The job title and the team live on the separate
+   * UserProfile row and only `users.getProfiles` returns them, so they are
+   * filled lazily by `resolveProfiles` for the handful of people actually on
+   * screen rather than for all 4358.
+   */
+  title?: string;
+  team?: string;
+};
 
 const people = new Map<string, Person>();
+/** Ids we have already asked getProfiles about — including ones it had nothing for. */
+const profiled = new Set<string>();
 let directory: Promise<void> | null = null;
 
 /** Avatar tints, in the spirit of the Spaces palette — stable per user. */
@@ -70,6 +90,48 @@ export function loadDirectory(): Promise<void> {
     });
   }
   return directory;
+}
+
+/**
+ * Fill in job title and team for the people on screen.
+ *
+ * Separate from `resolvePeople` on purpose: that one is about NAMES and stops
+ * as soon as a name is known, which is the common case for everyone in the
+ * directory. This one always has to call `getProfiles`, because the directory
+ * never carried a title in the first place. Callers that do not render the
+ * second line should not pay for it.
+ *
+ * Returns true when something changed, so a caller can re-render.
+ */
+export async function resolveProfiles(ids: Array<string | null | undefined>): Promise<boolean> {
+  await loadDirectory();
+  const wanted = [...new Set(ids.filter((i): i is string => typeof i === 'string' && i.length > 0))]
+    .filter(id => !profiled.has(id));
+  if (wanted.length === 0) return false;
+  // Mark before the call, not after: two surfaces mounting together would
+  // otherwise both fetch the same ids.
+  for (const id of wanted) profiled.add(id);
+  try {
+    const { spaces } = await xyne();
+    const rows = (await spaces.users.getProfiles(wanted)) as unknown as Array<Record<string, string>>;
+    let changed = false;
+    for (const p of rows ?? []) {
+      const id = p.userId ?? p.id;
+      if (!id) continue;
+      const prev = people.get(id) ?? { id, name: p.displayName || id.slice(0, 8) };
+      people.set(id, {
+        ...prev,
+        ...(p.displayName ? { name: p.displayName } : {}),
+        ...(p.role ? { title: p.role } : {}),
+        ...(p.team ? { team: p.team } : {}),
+      });
+      changed = true;
+    }
+    return changed;
+  } catch {
+    // A missing title is a missing subtitle, never a missing message.
+    return false;
+  }
 }
 
 /** Fill any ids the directory missed (external or newly created users). */

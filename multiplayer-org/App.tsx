@@ -42,7 +42,9 @@ import { loadRegistry, type Registry } from './lib/apps';
 import type { WorkItem } from './lib/workitem';
 import { ORG_APPS } from './orgApps/registry';
 import { ErrorBoundary } from './components/ErrorBoundary';
-import { RichText } from './components/RichText';
+import { Ledger } from './components/ledger/Ledger';
+import type { LedgerMessage } from './components/ledger/MessageRow';
+import { listAgents, type AgentOption } from './lib/agentrun';
 import { Store } from './components/Store';
 /**
  * Studio, loaded on demand.
@@ -127,6 +129,15 @@ export default function App(): JSX.Element {
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [thread, setThread] = useState<Message[]>([]);
   const [agents, setAgents] = useState<ClawAgent[]>([]);
+  /**
+   * The same agents, deduped on slug and ordered for a picker.
+   *
+   * A separate read from `agents` above rather than a mapping of it: that list
+   * is the raw `listAgents()` response, which is not org-scoped and carries
+   * duplicate display names across orgs. lib/agentrun.ts collapses it on slug,
+   * which is the only identifier that is actually unique.
+   */
+  const [agentOptions, setAgentOptions] = useState<AgentOption[]>([]);
   const [insights, setInsights] = useState<Insights | null>(null);
   const [dir, setDir] = useState<Directory>(EMPTY_DIRECTORY);
 
@@ -249,6 +260,7 @@ export default function App(): JSX.Element {
         setMe(user);
         setTrees(tree);
         setAgents(ag);
+        void listAgents().then(setAgentOptions).catch(() => setAgentOptions([]));
         // Names for every id the UI will render. One request; see lib/directory.ts.
         void loadDirectory(user?.id ?? null).then(setDir).catch(() => setDir(EMPTY_DIRECTORY));
       } catch (err) {
@@ -1087,172 +1099,17 @@ npm run dev`}
           </div>
         ) : null}
 
-        <div className="px-3 py-1.5 border-b border-border flex items-center gap-1 shrink-0">
-          {(['all', 'people', 'apps', 'agent'] as Layer[]).map((l) => (
-            <button
-              key={l}
-              onClick={() => setLayer(l)}
-              aria-pressed={layer === l}
-              className={[
-                'px-2 py-0.5 rounded-md text-[11px] capitalize transition-colors',
-                layer === l
-                  ? 'bg-secondary font-medium text-foreground'
-                  : 'text-muted-foreground hover:bg-accent/50',
-              ].join(' ')}
-            >
-              {l}
-            </button>
-          ))}
-          <span className="ml-auto text-[10px] text-muted-foreground" title="Every surface that touches this ticket records here">
-            context ledger
-          </span>
-        </div>
-
-        <ScrollArea className="flex-1 min-h-0">
-          <div className="p-4 flex flex-col gap-3">
-            {thread.length === 0 ? (
-              <div className="py-10 text-center">
-                <p className="text-[13px] text-muted-foreground">
-                  {!tabTicket
-                    ? 'Open a ticket to see its ledger.'
-                    : layer === 'all'
-                      ? 'Nothing recorded on this ticket yet.'
-                      : `Nothing in the ${layer} layer. Try “all”.`}
-                </p>
-                {tabTicket ? (
-                  <p className="text-[11px] text-muted-foreground/70 mt-1">
-                    Work logged in the app pane lands here.
-                  </p>
-                ) : null}
-              </div>
-            ) : (
-              thread
-                .filter((m) => {
-                  const e = parseUpdate(m.content);
-                  return matchesLayer(layer, e, m.msgType === 'BOT');
-                })
-                .map((m) => {
-                // MessageType is USER | BOT | SYSTEM | FORWARDED. BOT is how an
-                // agent's reply is marked in the same thread humans post into —
-                // which is what makes this one shared chat rather than two.
-                const isAgent = m.msgType === 'BOT';
-                // An app's update rides in the content behind a marker, because
-                // the server hardcodes messages.metadata to null. See lib/appUpdate.ts.
-                const { appId: fromApp, kind, body } = parseUpdate(m.content);
-                // Routine changes are recorded in full but rendered quietly —
-                // completeness for the agent, legibility for people.
-                const quiet = kind === 'activity';
-                const app = fromApp ? ORG_APPS.find((a) => a.id === fromApp) : undefined;
-                const who = isAgent ? 'Agent' : m.senderId === me?.id ? 'You' : dir.name(m.senderId);
-                return (
-                  <div
-                    key={m.messageId}
-                    className={['flex gap-2.5 text-sm', quiet ? 'opacity-60' : ''].join(' ')}
-                  >
-                    <div
-                      className={[
-                        'shrink-0 rounded-md grid place-items-center text-[10px] font-medium mt-0.5',
-                        quiet ? 'h-4 w-4 text-[9px]' : 'h-6 w-6',
-                        isAgent
-                          ? 'bg-agent-soft text-agent ring-1 ring-agent/25'
-                          : app
-                            ? 'bg-primary/10 text-primary ring-1 ring-primary/20'
-                            : 'bg-muted text-muted-foreground',
-                      ].join(' ')}
-                      aria-hidden
-                    >
-                      {isAgent ? '✦' : app ? '▤' : initials(who)}
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-baseline gap-2">
-                        <span className={`text-[12px] font-medium truncate ${isAgent ? 'text-agent' : ''}`}>
-                          {who}
-                        </span>
-                        <span className="text-[10px] text-muted-foreground tabular-nums shrink-0">
-                          {ago(m.createdAt)}
-                        </span>
-                        {app ? (
-                          <span className="shrink-0 px-1.5 py-px rounded border border-primary/20 bg-primary/5 text-primary text-[10px] font-medium">
-                            via {app.name}
-                          </span>
-                        ) : fromApp ? (
-                          <span className="shrink-0 px-1.5 py-px rounded border border-border text-muted-foreground text-[10px]">
-                            via {fromApp}
-                          </span>
-                        ) : null}
-                        {m.msgType === 'SYSTEM' || m.msgType === 'FORWARDED' ? (
-                          <Badge variant="outline" className="text-[9px] py-0 shrink-0">
-                            {humanize(m.msgType)}
-                          </Badge>
-                        ) : null}
-                      </div>
-                      {/* Xyne messages are HTML on the wire — links, mentions,
-                          formatting. Rendered as plain text this pane showed
-                          `<a href="…">#5547</a>` verbatim, which is both ugly
-                          and unusable: the link stopped being a link. RichText
-                          walks the parsed DOM and emits React nodes, so no
-                          markup reaches the page and nothing is injected. */}
-                      <div
-                        className={[
-                          'whitespace-pre-wrap break-words leading-relaxed',
-                          quiet ? 'text-[12px] text-muted-foreground' : 'text-[13px] text-foreground/90',
-                        ].join(' ')}
-                      >
-                        <RichText html={body} />
-                      </div>
-                    </div>
-                  </div>
-                );
-              })
-            )}
-            <div ref={endRef} />
-          </div>
-        </ScrollArea>
-
-        <div className="p-3 border-t border-border flex flex-col gap-2 shrink-0">
-          {actionError ? (
-            <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-2.5 py-1.5">
-              <p className="text-[11px] text-destructive flex-1 min-w-0 break-words">{actionError}</p>
-              <button
-                onClick={() => setActionError(null)}
-                className="text-[11px] text-muted-foreground hover:text-foreground shrink-0"
-                aria-label="Dismiss error"
-              >
-                ✕
-              </button>
-            </div>
-          ) : null}
-          <div className="flex gap-2">
-            <Input
-              value={composer}
-              onChange={(e) => setComposer(e.target.value)}
-              placeholder="Message this ticket…"
-              disabled={!tabTicket || busy}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && composer.trim()) {
-                  void send();
-                }
-              }}
-            />
-            <Button
-              size="sm"
-              disabled={!tabTicket || busy || composer.trim().length === 0}
-              onClick={() => void send()}
-            >
-              Send
-            </Button>
-          </div>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="self-start text-xs"
-            disabled={!tabTicket || busy || agents.length === 0}
-            onClick={() => void runAgent()}
-          >
-            <span className="mr-1.5 text-agent" aria-hidden>✦</span>
-            {agents[0] ? `Ask ${agents[0].name} about this ticket` : 'No agents available'}
-          </Button>
-        </div>
+        <Ledger
+          item={tabTicket}
+          messages={thread as unknown as LedgerMessage[]}
+          channel={track}
+          {...(me?.id ? { meId: me.id } : {})}
+          agents={agentOptions}
+          busy={busy}
+          {...(ticket?.description ? { description: ticket.description } : {})}
+          onSend={async text => void (await postFromPerson(text))}
+          onRefresh={refreshThread}
+        />
       </aside>
       ) : null}
     </div>
