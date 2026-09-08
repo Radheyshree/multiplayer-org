@@ -6,9 +6,11 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "bundle:sdk": "esbuild scripts/slim-spaces-entry.js --bundle --minify --format=esm --platform=browser --outfile=lib/vendor/spaces-sdk.js && esbuild node_modules/@xyne/storage-sdk/dist/index.js --bundle --minify --format=esm --platform=browser --outfile=lib/vendor/storage-sdk.js"
   },
   "dependencies": {
+    "@tailwindcss/browser": "^4.3.3",
     "@xyne/spaces-sdk": "https://drive.google.com/uc?export=download&id=1sgBCBIMugTvYCcwTyXy4pykt1wT-8wV0",
     "@xyne/storage-sdk": "https://drive.google.com/uc?export=download&id=1Y-k9KnpiFJbWOTHqPX5WNnqu-M1-s2lB",
     "class-variance-authority": "latest",
@@ -18,6 +20,7 @@
     "radix-ui": "^1.6.7",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "sucrase": "^3.35.1",
     "tailwind-merge": "latest"
   },
   "devDependencies": {

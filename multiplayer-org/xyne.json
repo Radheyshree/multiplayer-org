@@ -1,4 +1,8 @@
 {
   "title": "Multiplayer Org",
-  "entry": "/App.tsx"
+  "entry": "/App.tsx",
+  "appId": "cmtsnfbfl16av3i01uzikrabr",
+  "dependencies": {
+    "sucrase": "^3.35.0"
+  }
 }
