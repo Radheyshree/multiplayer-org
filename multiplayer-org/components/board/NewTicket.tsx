@@ -9,7 +9,7 @@
 import { useEffect, useState } from 'react';
 import { allPeople } from '../../lib/people';
 import { c, eyebrow, mono } from '../../lib/theme';
-import { createTicket, PRIORITIES, stageName, type Priority, type Stage } from '../../lib/tickets';
+import { createTicket, PRIORITIES, stageName, type CreatedTicket, type Priority, type Stage } from '../../lib/tickets';
 import { xyne } from '../../lib/xyne';
 
 type Project = { id: string; name?: string; code?: string };
@@ -23,6 +23,8 @@ export function NewTicket({
   initialProjectId,
   initialBoardId,
   initialStage,
+  /** The track's channel, when the shell knows it. Beats inference outright. */
+  initialChannelId,
   /** Tickets already on screen — used to infer this board's channel. */
   knownTickets,
   onCreated,
@@ -33,8 +35,9 @@ export function NewTicket({
   initialBoardId: string;
   /** Preselected column, when opened from one. */
   initialStage: string;
+  initialChannelId?: string;
   knownTickets: Array<{ boardId?: string; channelId?: string }>;
-  onCreated: () => void;
+  onCreated: (created: CreatedTicket) => void;
   onClose: () => void;
 }) {
   const [projectId, setProjectId] = useState(initialProjectId);
@@ -48,7 +51,7 @@ export function NewTicket({
   const [assignee, setAssignee] = useState('');
   const [assignQuery, setAssignQuery] = useState('');
   const [channels, setChannels] = useState<ChannelRow[]>([]);
-  const [channelId, setChannelId] = useState('');
+  const [channelId, setChannelId] = useState(initialChannelId ?? '');
   const [channelQuery, setChannelQuery] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -90,7 +93,9 @@ export function NewTicket({
   // reliable is that every existing ticket carries its channel, so infer the
   // board's channel from the tickets already on it, and let the user override.
   useEffect(() => {
-    if (!boardId) return;
+    // Opened from a track, the channel is a fact rather than a guess — the
+    // shell resolved it. Inference is the fallback for the standalone board.
+    if (initialChannelId || !boardId) return;
     const counts = new Map<string, number>();
     for (const t of knownTickets) {
       if (t.boardId === boardId && t.channelId) counts.set(t.channelId, (counts.get(t.channelId) ?? 0) + 1);
@@ -100,14 +105,14 @@ export function NewTicket({
       setChannelId(best);
       setChannelQuery('');
     }
-  }, [boardId, knownTickets]);
+  }, [boardId, knownTickets, initialChannelId]);
 
   const submit = async () => {
     if (!title.trim() || !projectId) return;
     setBusy(true);
     setError(null);
     try {
-      await createTicket({
+      const created = await createTicket({
         title: title.trim(),
         // The server rejects an EMPTY description, not just a missing one — it
         // tests truthiness. Xyne's own tickets mirror the title when no body was
@@ -120,7 +125,7 @@ export function NewTicket({
         priority,
         ...(assignee ? { assignedTo: assignee } : {}),
       });
-      onCreated();
+      onCreated(created);
       onClose();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -136,11 +141,11 @@ export function NewTicket({
   return (
     <div
       // An explicit hook, not a style-attribute match: the browser reserialises
-      // rgba(20,22,29,0.45) with spaces, so a substring selector on style
-      // silently never matches and a test concludes the dialog never opened.
+      // an rgb()/rgba() value with its own spacing, so a substring selector on
+      // style silently never matches and a test concludes the dialog never opened.
       data-dialog="new-ticket"
       className="fixed inset-0 z-50 grid place-items-center p-6"
-      style={{ background: 'rgba(20,22,29,0.45)' }}
+      style={{ background: c.scrim }}
       onClick={onClose}
     >
       <div
@@ -301,7 +306,7 @@ export function NewTicket({
         </div>
 
         {error && (
-          <p className="mt-3 rounded-md px-3 py-2 text-[12.5px]" style={{ background: '#FCF2EC', color: c.attention }}>
+          <p className="mt-3 rounded-md px-3 py-2 text-[12.5px]" style={{ background: c.attentionSoft, color: c.attention }}>
             {error}
           </p>
         )}
@@ -320,7 +325,7 @@ export function NewTicket({
               onClick={() => void submit()}
               disabled={busy || !title.trim() || !projectId || !channelId}
               className="rounded-md px-3 py-1.5 text-[12.5px] font-medium text-white"
-              style={{ background: title.trim() && projectId && channelId && !busy ? c.signal : '#D8D6CF' }}
+              style={{ background: title.trim() && projectId && channelId && !busy ? c.signal : c.line }}
             >
               {busy ? 'Creating…' : 'Create ticket'}
             </button>

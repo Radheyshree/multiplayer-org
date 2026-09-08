@@ -7,7 +7,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { listAllMessages, postMessage } from '../../lib/chat';
 import { initials, nameOf, resolvePeople, tintFor } from '../../lib/people';
-import { c, eyebrow, mono } from '../../lib/theme';
+import { c, eyebrow, mono, priorityColor } from '../../lib/theme';
 import {
   archiveTicket,
   assignTicket,
@@ -17,7 +17,6 @@ import {
   getMany,
   listActivities,
   listSubTickets,
-  moveToStage,
   PRIORITIES,
   stageName,
   STATUSES,
@@ -31,14 +30,8 @@ import {
   type TicketDetails,
 } from '../../lib/tickets';
 import { MessageList, type Msg } from '../MessageList';
+import { moveTicket } from '../../lib/kanban';
 import { AssigneePicker, Row, TagPicker } from './fields';
-
-const PRIORITY_TINT: Record<string, string> = {
-  CRITICAL: '#C0392B',
-  HIGH: '#C8622F',
-  MEDIUM: '#8A6A00',
-  LOW: '#7A8090',
-};
 
 const control = { background: c.card, border: `1px solid ${c.line}` } as const;
 const date = (t?: number) => (t ? new Date(t).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' }) : '—');
@@ -46,14 +39,33 @@ const date = (t?: number) => (t ? new Date(t).toLocaleDateString([], { month: 's
 export function TicketView({
   ticket,
   stages,
-  nonLinear,
   onChanged,
+  onReport,
+  gated,
+  showConversation = true,
   onBack,
 }: {
   ticket: Ticket;
   stages: Stage[];
-  nonLinear: boolean;
   onChanged: (patch: Partial<Ticket>) => void;
+  /**
+   * Record what was just changed in the ticket's own conversation.
+   *
+   * Optional so the view still works outside the shell (a test harness, a
+   * standalone route) — there the edit simply is not narrated.
+   */
+  onReport?: (what: string) => void;
+  /** The board runs transition rules, so a move may be routed to an approval. */
+  gated?: boolean;
+  /**
+   * Render this ticket's conversation alongside the fields.
+   *
+   * Off inside the shell, because the shell already shows that exact thread in
+   * its ledger the moment the ticket is focused — two copies of one
+   * conversation side by side is not two views, it is a bug that looks like a
+   * feature. On for anything mounting this view on its own.
+   */
+  showConversation?: boolean;
   onBack: () => void;
 }) {
   const [full, setFull] = useState<TicketDetails | null>(null);
@@ -110,12 +122,21 @@ export function TicketView({
       .catch(() => setMessages([]));
   }, [conversationId]);
 
-  const run = async (fn: () => Promise<void>, patch: Partial<Ticket>) => {
+  /**
+   * Apply one field change, then narrate it.
+   *
+   * `describe` is passed rather than derived from the patch because the patch
+   * is field-shaped ({assignedTo: 'u_1'}) and the ledger wants a sentence
+   * ("assigned to Priya"). Nothing is narrated until the write has resolved —
+   * the ledger records what happened, not what was attempted.
+   */
+  const run = async (fn: () => Promise<void>, patch: Partial<Ticket>, describe?: string) => {
     setError(null);
     try {
       await fn();
       onChanged(patch);
       setFull(prev => (prev ? { ...prev, ...patch } : prev));
+      if (describe) onReport?.(describe);
       void listActivities(ticket.id).then(setActivities).catch(() => {});
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -139,7 +160,7 @@ export function TicketView({
   return (
     <div className="flex h-full min-h-0" data-tick={tick}>
       <div className="min-w-0 flex-1 overflow-y-auto">
-        <header className="flex items-center gap-2 px-6 pt-5 pb-3">
+        <header className={`flex items-center gap-2 px-6 pt-5 pb-3 ${showConversation ? '' : 'mx-auto w-full max-w-3xl'}`}>
           <button onClick={onBack} className="text-[13px]" style={{ color: c.graphite }}>
             ‹ Board
           </button>
@@ -148,17 +169,20 @@ export function TicketView({
           </span>
         </header>
 
-        <div className="max-w-2xl px-6 pb-10">
+        {/* Narrow enough to read a form in, and centred rather than left-hugging
+            when the conversation pane is gone — a 700px column pinned to the
+            left of a 1100px pane reads as a layout that failed to fill. */}
+        <div className={`px-6 pb-10 ${showConversation ? 'max-w-2xl' : 'mx-auto w-full max-w-3xl'}`}>
           <input
             value={title}
             onChange={e => setTitle(e.target.value)}
-            onBlur={() => title !== t.title && void run(() => updateTicket(t.id, { title }), { title })}
+            onBlur={() => title !== t.title && void run(() => updateTicket(t.id, { title }), { title }, `retitled to "${title}"`)}
             className="w-full bg-transparent text-[24px] leading-tight font-semibold outline-none"
           />
           <textarea
             value={desc}
             onChange={e => setDesc(e.target.value)}
-            onBlur={() => desc !== t.description && void run(() => updateTicket(t.id, { description: desc }), { description: desc })}
+            onBlur={() => desc !== t.description && void run(() => updateTicket(t.id, { description: desc }), { description: desc }, 'edited the description')}
             rows={2}
             placeholder="Add a description"
             className="mt-2 w-full resize-y bg-transparent text-[13.5px] leading-relaxed outline-none"
@@ -166,7 +190,7 @@ export function TicketView({
           />
 
           {error && (
-            <p className="my-3 rounded-md px-3 py-2 text-[12.5px]" style={{ background: '#FCF2EC', color: c.attention }}>
+            <p className="my-3 rounded-md px-3 py-2 text-[12.5px]" style={{ background: c.attentionSoft, color: c.attention }}>
               {error}
             </p>
           )}
@@ -175,7 +199,7 @@ export function TicketView({
             <Row label="Assignee">
               <AssigneePicker
                 current={t.assignedTo}
-                onPick={id => void run(() => assignTicket(t.id, id), { assignedTo: id })}
+                onPick={id => void run(() => assignTicket(t.id, id), { assignedTo: id }, `assigned to ${nameOf(id)}`)}
               />
             </Row>
             <Row label="Created at">
@@ -202,7 +226,30 @@ export function TicketView({
             <Row label="Stage">
               <select
                 value={t.stageName ?? ''}
-                onChange={e => void run(() => moveToStage(t.id, e.target.value, nonLinear), { stageName: e.target.value })}
+                onChange={e => {
+                  const next = e.target.value;
+                  const from = t.stageName ?? '—';
+                  void run(
+                    async () => {
+                      const target = stages.find(st => stageName(st) === next);
+                      const { applied, queued } = await moveTicket(
+                        { id: t.id },
+                        { ...(target?.id ? { id: target.id } : {}), name: next },
+                      );
+                      // Same rule as the board: a move the server accepted but
+                      // did not apply must not repaint the field as though it did.
+                      if (!applied) {
+                        throw new Error(
+                          queued
+                            ? `${next} needs approval — a stage request is open.`
+                            : `The board did not move this to ${next}.`,
+                        );
+                      }
+                    },
+                    { stageName: next },
+                    `moved ${from} → ${next}`,
+                  );
+                }}
                 className="h-8 w-56 rounded-md px-2 text-[12.5px] outline-none"
                 style={control}
               >
@@ -212,7 +259,7 @@ export function TicketView({
                   </option>
                 ))}
               </select>
-              {nonLinear && (
+              {gated && (
                 <p className="mt-1 text-[11px]" style={{ color: c.mute }}>
                   This board runs transition rules — a move may need approval.
                 </p>
@@ -221,7 +268,7 @@ export function TicketView({
             <Row label="Status">
               <select
                 value={t.statusV2 ?? 'TODO'}
-                onChange={e => void run(() => updateTicket(t.id, { statusV2: e.target.value as StatusV2 }), { statusV2: e.target.value as StatusV2 })}
+                onChange={e => void run(() => updateTicket(t.id, { statusV2: e.target.value as StatusV2 }), { statusV2: e.target.value as StatusV2 }, `status → ${e.target.value}`)}
                 className="h-8 w-56 rounded-md px-2 text-[12.5px] outline-none"
                 style={control}
               >
@@ -235,12 +282,12 @@ export function TicketView({
                 {PRIORITIES.map(p => (
                   <button
                     key={p}
-                    onClick={() => void run(() => updateTicket(t.id, { priority: p }), { priority: p })}
+                    onClick={() => void run(() => updateTicket(t.id, { priority: p }), { priority: p }, `priority → ${p}`)}
                     className="rounded-full border px-2 py-0.5 text-[11px] font-medium"
                     style={{
-                      borderColor: t.priority === p ? PRIORITY_TINT[p] : c.line,
-                      color: t.priority === p ? PRIORITY_TINT[p] : c.graphite,
-                      background: t.priority === p ? '#FFF' : 'transparent',
+                      borderColor: t.priority === p ? priorityColor(p) : c.line,
+                      color: t.priority === p ? priorityColor(p) : c.graphite,
+                      background: t.priority === p ? c.card : 'transparent',
                     }}
                   >
                     {p}
@@ -262,7 +309,7 @@ export function TicketView({
                   onAdd={name => void run(async () => {
                     const { addTag } = await import('../../lib/tickets');
                     await addTag(t.id, t.projectId as string, name);
-                  }, {})}
+                  }, {}, `tagged ${name}`)}
                 />
               ) : (
                 <span className="text-[13px]" style={{ color: c.mute }}>—</span>
@@ -282,7 +329,7 @@ export function TicketView({
                 if (e.key === 'Enter' && newSub.trim()) {
                   const v = newSub.trim();
                   setNewSub('');
-                  void run(() => createSubTicket(t.id, v), {}).then(() =>
+                  void run(() => createSubTicket(t.id, v), {}, `added sub-ticket "${v}"`).then(() =>
                     listSubTickets(t.id).then(setSubs).catch(() => {}),
                   );
                 }
@@ -337,7 +384,7 @@ export function TicketView({
           </section>
 
           <button
-            onClick={() => void run(() => archiveTicket(t.id), { isArchived: true }).then(onBack)}
+            onClick={() => void run(() => archiveTicket(t.id), { isArchived: true }, 'archived this ticket').then(onBack)}
             className="mt-8 rounded-md border px-2.5 py-1 text-[12px]"
             style={{ borderColor: c.line, color: c.attention }}
           >
@@ -346,6 +393,7 @@ export function TicketView({
         </div>
       </div>
 
+      {showConversation ? (
       <aside className="flex min-h-0 flex-col" style={{ width: '26rem', borderLeft: `1px solid ${c.line}` }}>
         <header className="px-4 py-3" style={{ borderBottom: `1px solid ${c.line}` }}>
           <span style={{ ...eyebrow, color: c.graphite }}>Messages</span>
@@ -377,7 +425,7 @@ export function TicketView({
                 onClick={() => void send()}
                 disabled={!draft.trim() || !conversationId}
                 className="grid size-7 place-items-center rounded-lg text-white"
-                style={{ background: draft.trim() && conversationId ? c.signal : '#D8D6CF' }}
+                style={{ background: draft.trim() && conversationId ? c.signal : c.line }}
                 aria-label="Send"
               >
                 ↑
@@ -386,6 +434,7 @@ export function TicketView({
           </div>
         </div>
       </aside>
+      ) : null}
     </div>
   );
 }

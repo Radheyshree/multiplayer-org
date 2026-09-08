@@ -280,7 +280,7 @@ function Empty({ busy, missing }: { busy: boolean; missing: boolean }) {
 function Failure({ error }: { error: RuntimeError }) {
   return (
     <div className="absolute inset-x-0 bottom-0 max-h-[60%] overflow-auto p-3">
-      <div className="rounded-md p-3" style={{ background: '#FFF7F2', border: `1px solid ${c.attention}` }}>
+      <div className="rounded-md p-3" style={{ background: c.attentionSoft, border: `1px solid ${c.attention}` }}>
         <div style={{ ...eyebrow, color: c.attention }}>Broke in {error.where}</div>
         <p className="mt-1.5 text-[13px] leading-snug" style={{ color: c.text }}>
           {error.message}

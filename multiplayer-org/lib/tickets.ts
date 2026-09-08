@@ -24,13 +24,15 @@ export type Ticket = {
   priority?: Priority;
   statusV2?: StatusV2;
   stageName?: string;
-  assignedTo?: string;
+  /** Nullable on the wire, not merely absent — an unassigned ticket sends
+   *  `null`. Typed to match so SDK rows flow in without a mapping step. */
+  assignedTo?: string | null;
   createdBy?: string;
   projectId?: string;
   boardId?: string;
   conversationId?: string;
   channelId?: string;
-  eta?: number;
+  eta?: number | null;
   createdAt?: number;
   isArchived?: boolean;
   isStageOverdue?: boolean;
@@ -199,10 +201,29 @@ export async function createTicket(data: {
   stageName?: string;
   priority?: Priority;
   assignedTo?: string;
-}): Promise<{ id?: string }> {
+}): Promise<CreatedTicket> {
   const { spaces } = await xyne();
-  return (await spaces.tickets.create(data)) as unknown as { id?: string };
+  return (await spaces.tickets.create(data)) as unknown as CreatedTicket;
 }
+
+/**
+ * What create hands back.
+ *
+ * `conversationId` is the useful part and it is not obvious that it is there:
+ * the server opens the ticket's thread as part of creation, so the new ticket
+ * can be posted into and focused immediately, with no follow-up read.
+ */
+export type CreatedTicket = {
+  id: string;
+  xyneId: string;
+  conversationId: string;
+  title?: string;
+  stageName?: string;
+  priority?: Priority;
+  projectId?: string;
+  boardId?: string;
+  channelId?: string;
+};
 
 export async function getDetails(ticketId: string): Promise<TicketDetails | null> {
   const { spaces } = await xyne();

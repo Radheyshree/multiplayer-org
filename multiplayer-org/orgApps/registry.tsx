@@ -11,15 +11,14 @@
  * would be an ArtifactApp payload the agent generated — the contract below is
  * what stays the same across that move.
  */
-import { useEffect, useState } from 'react';
-import type { Ticket } from '../lib/org';
-import { loadTicketPage } from '../lib/org';
-import { humanize, type Directory } from '../lib/directory';
-import { Textarea } from '../components/ui/textarea';
-import { Button } from '../components/ui/button';
-import { Badge } from '../components/ui/badge';
-import { Label } from '../components/ui/label';
-import { KanbanBoard } from './KanbanBoard';
+import type { WorkItem } from '../lib/workitem';
+import type { Directory } from '../lib/directory';
+import { catalogueDrift } from './catalogue';
+import { Board } from '../components/surfaces/Board';
+import { Chat } from '../components/surfaces/Chat';
+import { Code } from '../components/surfaces/Code';
+import { Desk } from '../components/surfaces/Desk';
+import { Scribe } from '../components/surfaces/Scribe';
 
 /**
  * What a work app is given.
@@ -41,11 +40,22 @@ export interface OrgAppProps {
   /** Resolves user ids to names — the API returns ids almost everywhere. */
   dir: Directory;
   /** Post an update ABOUT a specific ticket. The app names which one. */
-  postUpdate: (ticket: Ticket, content: string, kind?: 'activity' | 'note') => Promise<string>;
+  postUpdate: (ticket: WorkItem, content: string, kind?: 'activity' | 'note') => Promise<string>;
   /** Ask the shell to show this ticket's chat on the right. */
-  focusTicket: (ticket: Ticket | null) => void;
+  focusTicket: (ticket: WorkItem | null) => void;
   /** Which ticket the chat pane is currently showing, if any. */
   focusedTicketId: string | null;
+  /**
+   * The focused ticket itself, not just its id.
+   *
+   * Both are handed over because they answer different questions. Highlighting
+   * a row in a list only needs the id, and comparing ids does not re-render
+   * when an unrelated field changes. An app that wants to FOLLOW the focus —
+   * open that ticket's conversation, filter itself to that ticket's channel —
+   * needs the row, and re-reading it from the server to get back what the shell
+   * already holds would be a round trip for nothing.
+   */
+  focused: WorkItem | null;
   busy: boolean;
 }
 
@@ -61,153 +71,75 @@ export interface OrgApp {
   name: string;
   blurb: string;
   Component: (props: OrgAppProps) => JSX.Element;
-}
-
-function Field({ label, value }: { label: string; value: string }): JSX.Element {
-  return (
-    <div className="grid grid-cols-[7rem_minmax(0,1fr)] gap-3 py-1.5 border-b border-border/60 last:border-0">
-      <span className="text-xs uppercase tracking-wide text-muted-foreground pt-0.5">{label}</span>
-      <span className="text-sm break-words min-w-0 overflow-wrap-anywhere">{value || '—'}</span>
-    </div>
-  );
+  /**
+   * Whether the app draws its own scroll containers.
+   *
+   * The pane is a padded `ScrollArea` by default, which is right for a document
+   * and wrong for anything with columns or panes of its own: a kanban board
+   * inside a page scroller gets two scrollbars and columns that grow past the
+   * viewport instead of scrolling independently. Full-bleed apps are handed a
+   * fixed-height box and own everything inside it.
+   */
+  fullBleed?: boolean;
 }
 
 /**
- * Xyne Desk — a queue, not a single ticket.
+ * The apps this org can open.
  *
- * Shows every ticket on the track, lets you pick one to work, and logs the note
- * against THAT ticket. Which ticket the note lands on is decided here, in the
- * app, at the moment of acting — never by whatever the shell had selected.
+ * `id` is the join key: it matches an entry in `catalogue.ts` (which is what
+ * the store renders) and it is what `tagUpdate` stamps on every message this
+ * app writes. Changing one without the other silently orphans a ledger entry's
+ * attribution, so they are checked against each other at the bottom of
+ * catalogue.ts.
+ *
+ * Every app here is `fullBleed`. That is not a coincidence: each one is a
+ * workspace with its own columns, panes and toolbars, which is what an app over
+ * a whole track looks like. A document-shaped app would leave the flag off and
+ * get the pane's padded scroller instead.
  */
-function XyneDesk({ scope, dir, postUpdate, focusTicket, focusedTicketId, busy }: OrgAppProps): JSX.Element {
-  const [queue, setQueue] = useState<Ticket[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [note, setNote] = useState('');
-  const [sent, setSent] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!scope) {
-      setQueue([]);
-      return;
-    }
-    setLoading(true);
-    void loadTicketPage(scope.projectId, scope.channelId, 50, null)
-      .then((p) => setQueue(p.items))
-      .catch(() => setQueue([]))
-      .finally(() => setLoading(false));
-  }, [scope]);
-
-  const working = queue.find((t) => t.id === focusedTicketId) ?? null;
-
-  const send = async (): Promise<void> => {
-    const text = note.trim();
-    if (!working || !text) return;
-    const id = await postUpdate(working, text);
-    setSent(id);
-    setNote('');
-  };
-
-  if (!scope) {
-    return (
-      <p className="text-[13px] text-muted-foreground">
-        Pick a track in the sidebar to see its desk.
-      </p>
-    );
-  }
-
-  return (
-    <div className="flex gap-5 min-w-0 h-full">
-      {/* The queue. Picking one focuses it — the chat on the right follows. */}
-      <div className="w-72 shrink-0 flex flex-col gap-2 min-h-0">
-        <h2 className="text-[13px] font-semibold shrink-0">
-          Queue <span className="text-muted-foreground font-normal">({queue.length})</span>
-        </h2>
-        <div className="flex-1 min-h-0 overflow-y-auto flex flex-col gap-1 pr-1">
-          {loading ? (
-            <p className="text-[12px] text-muted-foreground">Loading…</p>
-          ) : queue.length === 0 ? (
-            <p className="text-[12px] text-muted-foreground">No tickets on this track.</p>
-          ) : (
-            queue.map((t) => {
-              const on = t.id === focusedTicketId;
-              return (
-                <button
-                  key={t.id}
-                  onClick={() => focusTicket(t)}
-                  className={[
-                    'w-full text-left rounded-md px-2 py-1.5 transition-colors min-w-0',
-                    on ? 'bg-primary/10' : 'hover:bg-accent/50',
-                  ].join(' ')}
-                >
-                  <span className="flex items-baseline gap-1.5 min-w-0">
-                    <span className="font-mono text-[10px] text-muted-foreground shrink-0">{t.xyneId}</span>
-                    <span className={`text-[12px] truncate ${on ? 'font-medium' : 'text-foreground/75'}`}>
-                      {t.title}
-                    </span>
-                  </span>
-                  <span className="block text-[10px] text-muted-foreground truncate">
-                    {humanize(t.stageName)} · {dir.name(t.assignedTo)}
-                  </span>
-                </button>
-              );
-            })
-          )}
-        </div>
-      </div>
-
-      {/* The one being worked. */}
-      <div className="flex-1 min-w-0 overflow-y-auto">
-        {!working ? (
-          <p className="text-[13px] text-muted-foreground">
-            Pick a ticket from the queue to work it.
-          </p>
-        ) : (
-          <div className="flex flex-col gap-5 max-w-2xl min-w-0">
-            <div>
-              <div className="flex items-center gap-2 mb-3 flex-wrap">
-                <Badge variant="secondary">{working.xyneId}</Badge>
-                <Badge variant="outline">{humanize(working.statusV2)}</Badge>
-                <Badge variant="outline">{humanize(working.priority)}</Badge>
-              </div>
-              <h2 className="text-lg font-semibold leading-snug break-words">{working.title}</h2>
-            </div>
-
-            <div className="rounded-md border border-border p-4">
-              <Field label="Stage" value={humanize(working.stageName)} />
-              <Field label="Assigned to" value={dir.name(working.assignedTo)} />
-              <Field label="Type" value={humanize(working.ticketType)} />
-              <Field label="Description" value={working.description} />
-            </div>
-
-            <div className="flex flex-col gap-2">
-              <Label htmlFor="desk-note">Log a work update on {working.xyneId}</Label>
-              <Textarea
-                id="desk-note"
-                value={note}
-                onChange={(e) => setNote(e.target.value)}
-                placeholder="Reproduced on staging. Root cause is the retry loop in the webhook handler."
-                rows={3}
-              />
-              <div className="flex items-center gap-3">
-                <Button onClick={() => void send()} disabled={busy || note.trim().length === 0}>
-                  {busy ? 'Posting…' : `Post to ${working.xyneId}`}
-                </Button>
-                {sent ? <span className="text-xs text-muted-foreground">Posted.</span> : null}
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
 export const ORG_APPS: OrgApp[] = [
   {
     id: 'kanban-board',
-    name: 'Kanban Board',
+    name: 'Tickets Board',
     blurb: "The track's board — stages as columns, tickets in them, moves that stick.",
-    Component: KanbanBoard,
+    Component: Board,
+    fullBleed: true,
   },
-  { id: 'xyne-desk', name: 'Xyne Desk', blurb: 'Work the track queue and log against a ticket', Component: XyneDesk },
+  {
+    id: 'xyne-desk',
+    name: 'Xyne Desk',
+    blurb: 'The support inbox — email-driven tickets, read and reply.',
+    Component: Desk,
+    fullBleed: true,
+  },
+  {
+    id: 'xyne-chat',
+    name: 'Xyne Chat',
+    blurb: 'Channels, threads and replies, following the track you have open.',
+    Component: Chat,
+    fullBleed: true,
+  },
+  {
+    id: 'xyne-scribe',
+    name: 'Xyne Scribe',
+    blurb: 'Live, upcoming and past calls — link one to the ticket it was about.',
+    Component: Scribe,
+    fullBleed: true,
+  },
+  {
+    id: 'github',
+    name: 'GitHub & Bitbucket',
+    blurb: 'Browse repositories, pull requests and commits, and attach them to a ticket.',
+    Component: Code,
+    fullBleed: true,
+  },
 ];
+
+// Fails loudly in dev if the store and the registry have drifted apart. Not a
+// throw: a mismatched id should not blank the app during a demo, it should tell
+// whoever is looking at the console what to fix.
+if (import.meta.env?.DEV) {
+  const { missing, stale } = catalogueDrift(ORG_APPS.map((a) => a.id));
+  if (missing.length) console.warn('[orgApps] mounted but not in the store:', missing);
+  if (stale.length) console.warn('[orgApps] marked live in the store but not mounted:', stale);
+}

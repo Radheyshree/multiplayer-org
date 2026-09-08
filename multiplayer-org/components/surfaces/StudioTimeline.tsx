@@ -146,8 +146,8 @@ function TurnCard({
 
   return (
     <div>
-      <div className="rounded-lg px-3 py-2" style={{ background: c.inkSoft }}>
-        <p className="whitespace-pre-wrap text-[12.5px] leading-snug" style={{ color: '#E8EAF0' }}>
+      <div className="rounded-lg px-3 py-2" style={{ background: c.signalSoft }}>
+        <p className="whitespace-pre-wrap text-[12.5px] leading-snug" style={{ color: c.text }}>
           {turn.prompt}
         </p>
       </div>

@@ -4,11 +4,26 @@
  * supportTickets.list joins the ticket's emails, project and conversation in
  * one call, so the list renders with mail previews without a second round trip.
  * Writes go through tickets.* — supportTickets is read-only by design.
+ *
+ * WHY THIS ONE IS NOT TRACK-SCOPED, unlike the board.
+ *
+ * The shell hands every app the track's `channelId`. Desk cannot use it: a desk
+ * is an EMAIL channel, and a track is a work channel. They are different rows,
+ * and no ticket links one to the other — a support ticket carries the desk's
+ * channel, never the track's. Filtering the desk list by `scope.channelId`
+ * would reliably return nothing.
+ *
+ * So Desk stays workspace-wide and contributes the other way: focusing a
+ * support ticket points the shell's chat at that ticket's own conversation, and
+ * a reply is recorded there. The ledger still gets the truth; it is just not
+ * the track's ledger, because this ticket does not belong to the track.
  */
 import { useEffect, useState } from 'react';
 import { loadDirectory, nameOf, resolvePeople } from '../../lib/people';
 import { RichText, toPreview } from '../RichText';
 import { c, eyebrow, mono } from '../../lib/theme';
+import { toWorkItem } from '../../lib/workitem';
+import type { OrgAppProps } from '../../orgApps/registry';
 import { xyne } from '../../lib/xyne';
 
 type ChannelRow = {
@@ -30,13 +45,15 @@ type DeskTicket = {
   xyneId?: string;
   title?: string;
   priority?: string;
+  statusV2?: string;
   stageName?: string;
   assignedTo?: string;
+  channelId?: string;
   conversationId?: string;
   emails?: Email[];
 };
 
-export function Desk() {
+export function Desk({ postUpdate, focusTicket, focusedTicketId }: OrgAppProps) {
   const [desks, setDesks] = useState<ChannelRow[]>([]);
   const [channelId, setChannelId] = useState('');
   const [tickets, setTickets] = useState<DeskTicket[]>([]);
@@ -83,6 +100,10 @@ export function Desk() {
   const open = async (t: DeskTicket) => {
     setOpenId(t.id);
     setSent(null);
+    // Point the shell's chat at this ticket. A desk ticket has its own
+    // conversation — the same thread the reply below lands in — so the pane on
+    // the right is showing the very conversation you are working, not a copy.
+    focusTicket(toWorkItem(t));
     // The list already joins emails; only ask again if it came back empty.
     if (t.emails?.length) return setThread(t.emails);
     if (!t.conversationId) return setThread([]);
@@ -91,14 +112,29 @@ export function Desk() {
     setThread(mails ?? []);
   };
 
+  /**
+   * Reply into the ticket's thread — through the shell, not directly.
+   *
+   * This used to call `messages.send` with a conversationId the app had chosen
+   * itself. Routing it through `postUpdate` means the app names the TICKET and
+   * the shell resolves the target, which is the same boundary a published app
+   * gets over postMessage. It also stamps the attribution, so the ledger says
+   * which surface the reply came from.
+   */
   const reply = async () => {
     const text = draft.trim();
     const t = tickets.find(x => x.id === openId);
-    if (!text || !t?.conversationId) return;
+    const item = t ? toWorkItem(t) : null;
+    if (!text || !item) return;
     setDraft('');
-    const { spaces } = await xyne();
-    await spaces.messages.send({ conversationId: t.conversationId, content: text });
-    setSent('Reply posted to the ticket thread.');
+    setError(null);
+    try {
+      await postUpdate(item, text, 'note');
+      setSent('Reply posted to the ticket thread.');
+    } catch (e) {
+      setDraft(text);
+      setError(e instanceof Error ? e.message : String(e));
+    }
   };
 
   const current = tickets.find(t => t.id === openId);
@@ -135,7 +171,7 @@ export function Desk() {
               onClick={() => void open(t)}
               className="w-full px-3 py-2.5 text-left"
               style={{
-                background: openId === t.id ? c.signalSoft : 'transparent',
+                background: openId === t.id || focusedTicketId === t.id ? c.signalSoft : 'transparent',
                 borderBottom: `1px solid ${c.line}`,
               }}
             >
@@ -163,7 +199,7 @@ export function Desk() {
 
       <section className="flex min-h-0 flex-col">
         {error && (
-          <p className="m-3 rounded-md px-3 py-2 text-[12.5px]" style={{ background: '#FCF2EC', color: c.attention }}>
+          <p className="m-3 rounded-md px-3 py-2 text-[12.5px]" style={{ background: c.attentionSoft, color: c.attention }}>
             {error}
           </p>
         )}

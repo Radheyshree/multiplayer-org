@@ -73,7 +73,7 @@ export function loadDirectory(): Promise<void> {
 }
 
 /** Fill any ids the directory missed (external or newly created users). */
-export async function resolvePeople(ids: Array<string | undefined>): Promise<boolean> {
+export async function resolvePeople(ids: Array<string | null | undefined>): Promise<boolean> {
   await loadDirectory();
   const missing = [...new Set(ids.filter((i): i is string => typeof i === 'string' && i.length > 0 && !people.has(i)))];
   if (missing.length === 0) return false;

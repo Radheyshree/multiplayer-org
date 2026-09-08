@@ -3,6 +3,12 @@
  *
  * channels.list already joins the channel row and carries unreadCount, so the
  * sidebar is one call rather than a list plus a per-channel read-state query.
+ *
+ * It follows the shell twice over. Opening a track selects that track's channel,
+ * because the track IS a channel — the same row, read through a different
+ * surface. And focusing a ticket opens that ticket's own conversation, because
+ * a ticket's thread is a conversation in its channel like any other. Neither is
+ * a mapping we invented; both are the same rows the shell is already holding.
  */
 import { useEffect, useState } from 'react';
 import { listAllMessages, listThreads, type ThreadRow } from '../../lib/chat';
@@ -10,6 +16,7 @@ import { Avatar, MessageList } from '../MessageList';
 import { toPreview } from '../RichText';
 import { loadDirectory, nameOf, resolvePeople } from '../../lib/people';
 import { c, eyebrow, mono } from '../../lib/theme';
+import type { OrgAppProps } from '../../orgApps/registry';
 import { xyne } from '../../lib/xyne';
 
 type ChannelRow = {
@@ -27,7 +34,7 @@ type Message = {
   messageActs?: string | null;
 };
 
-export function Chat() {
+export function Chat({ scope, focused }: OrgAppProps) {
   const [channels, setChannels] = useState<ChannelRow[]>([]);
   const [filter, setFilter] = useState('');
   const [channelId, setChannelId] = useState('');
@@ -50,9 +57,31 @@ export function Chat() {
       const live = rows.filter(r => !r.channel?.isArchived);
       live.sort((a, b) => (b.unreadCount ?? 0) - (a.unreadCount ?? 0));
       setChannels(live);
-      if (live[0]) setChannelId(live[0].channelId);
+      // The track's own channel, if it is one this user is in; otherwise the
+      // busiest. Resolved here rather than in a second effect so the first
+      // render already shows the right channel instead of flashing another.
+      const preferred = scope && live.some(r => r.channelId === scope.channelId) ? scope.channelId : live[0]?.channelId;
+      if (preferred) setChannelId(preferred);
     })().catch(e => setError(String(e)));
   }, []);
+
+  /** Follow the rail when it moves to a different track. */
+  useEffect(() => {
+    if (scope && channels.some(r => r.channelId === scope.channelId)) setChannelId(scope.channelId);
+  }, [scope?.channelId, channels]);
+
+  /**
+   * Follow the focused ticket into its own thread.
+   *
+   * Only when that thread is in the channel on screen — jumping the channel
+   * sidebar as a side effect of clicking a card elsewhere would move the ground
+   * under someone who was reading something else.
+   */
+  useEffect(() => {
+    if (!focused?.conversationId) return;
+    if (focused.channelId && focused.channelId !== channelId) return;
+    setConvId(focused.conversationId);
+  }, [focused?.conversationId, focused?.channelId, channelId]);
 
   const addPreviews = async (rows: ThreadRow[]) => {
     const ids = rows.map(x => x.initialMessageId).filter((i): i is string => Boolean(i));
@@ -140,11 +169,20 @@ export function Chat() {
         {shown.slice(0, 120).map(ch => (
           <button
             key={ch.channelId}
+            // Scroll the selected row into view. The track's channel is chosen
+            // for you and this list runs to 200 rows, so without this the
+            // sidebar looks like nothing is selected while the pane on the
+            // right is clearly showing a channel.
+            ref={
+              ch.channelId === channelId
+                ? el => el?.scrollIntoView({ block: 'nearest' })
+                : undefined
+            }
             onClick={() => setChannelId(ch.channelId)}
             className="mx-2 flex items-center gap-2 rounded-md px-2 py-1.5 text-left"
             style={{
               width: 'calc(100% - 1rem)',
-              background: channelId === ch.channelId ? '#ECEBE5' : 'transparent',
+              background: channelId === ch.channelId ? c.inkSoft : 'transparent',
             }}
           >
             <span
@@ -236,7 +274,7 @@ export function Chat() {
             {channels.find(x => x.channelId === channelId)?.channel?.name ?? 'channel'}
           </span>
           {convId && (
-            <span className="rounded-full px-2 py-0.5 text-[10.5px]" style={{ background: '#F2F1EC', color: c.graphite }}>
+            <span className="rounded-full px-2 py-0.5 text-[10.5px]" style={{ background: c.ink, color: c.graphite }}>
               thread
             </span>
           )}
@@ -245,7 +283,7 @@ export function Chat() {
           </span>
         </header>
         {error && (
-          <p className="m-3 rounded-md px-3 py-2 text-[12.5px]" style={{ background: '#FCF2EC', color: c.attention }}>
+          <p className="m-3 rounded-md px-3 py-2 text-[12.5px]" style={{ background: c.attentionSoft, color: c.attention }}>
             {error}
           </p>
         )}
@@ -284,7 +322,7 @@ export function Chat() {
                     onClick={() => void send()}
                     disabled={!draft.trim()}
                     className="grid size-7 place-items-center rounded-lg text-white"
-                    style={{ background: draft.trim() ? c.signal : '#D8D6CF' }}
+                    style={{ background: draft.trim() ? c.signal : c.line }}
                     aria-label="Send"
                   >
                     ↑

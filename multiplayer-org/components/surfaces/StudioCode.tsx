@@ -227,7 +227,7 @@ export function StudioCode({
                   className="flex"
                   style={{
                     background:
-                      row.kind === '+' ? '#EAF7F0' : row.kind === '-' ? '#FDF0EA' : 'transparent',
+                      row.kind === '+' ? c.liveSoft : row.kind === '-' ? c.dangerSoft : 'transparent',
                   }}
                 >
                   <span

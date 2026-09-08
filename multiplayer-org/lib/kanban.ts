@@ -120,16 +120,27 @@ export interface MoveOutcome {
  * are `'SUBMITTED'` and `'DRAFT'`. And `listOpenStageRequests` is keyed by stage
  * and never defines "open", so `listStageRequests(ticketId)` is the safe read.
  */
-export async function moveTicket(ticket: Ticket, toStage: Stage): Promise<MoveOutcome> {
+export async function moveTicket(
+  // Only the id is used. Typed narrowly so an app holding a partial row — a
+  // kanban card, a desk row — can move a ticket without re-reading all 30
+  // fields of it first.
+  ticket: { id: string },
+  // The id is optional because not every caller has the stage ROW: a detail
+  // pane offers stage names in a select. Without it the queued check widens
+  // from "a request for this stage" to "a request at all", which is the honest
+  // reading — the move did not apply and something is outstanding.
+  toStage: { id?: string; name: string },
+): Promise<MoveOutcome> {
   await spaces.tickets.transitionStage(ticket.id, toStage.name);
 
   const after = await spaces.tickets.getRow(ticket.id).catch(() => null);
   if (after?.stageName === toStage.name) return { applied: true, queued: false };
 
   const requests = await spaces.tickets.listStageRequests(ticket.id).catch(() => []);
-  const queued = requests.some(
-    (r) => r.stageId === toStage.id && (r.status === 'SUBMITTED' || r.status === 'DRAFT'),
-  );
+  const outstanding = requests.filter((r) => r.status === 'SUBMITTED' || r.status === 'DRAFT');
+  const queued = toStage.id
+    ? outstanding.some((r) => r.stageId === toStage.id)
+    : outstanding.length > 0;
   return { applied: false, queued };
 }
 

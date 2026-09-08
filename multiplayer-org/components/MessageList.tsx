@@ -20,13 +20,17 @@ export type Msg = {
 
 const GROUP_WINDOW_MS = 5 * 60 * 1000;
 
-/** Act-tag tints, matching the dashboard's colour language. */
+/**
+ * Act-tag tints. Five acts, five of the shell's semantic hues — so a tag reads
+ * as the same KIND of thing here as everywhere else in the app, and inverts
+ * with the theme instead of staying a light pastel on a dark page.
+ */
 const ACT_TINT: Record<string, { bg: string; fg: string }> = {
-  DISCUSSION: { bg: '#FDE7E7', fg: '#C0392B' },
-  QUESTION: { bg: '#FDF3D7', fg: '#8A6A00' },
-  REQUEST: { bg: '#FBE3EE', fg: '#B5387C' },
-  WHAT_IS: { bg: '#E3EEFB', fg: '#2E6DA4' },
-  ANSWER: { bg: '#E4F5EA', fg: '#2E7D4F' },
+  DISCUSSION: { bg: c.dangerSoft, fg: c.danger },
+  QUESTION: { bg: c.attentionSoft, fg: c.attention },
+  REQUEST: { bg: c.agentSoft, fg: c.agent },
+  WHAT_IS: { bg: c.signalSoft, fg: c.signal },
+  ANSWER: { bg: c.liveSoft, fg: c.live },
 };
 
 function sameDay(a: number, b: number): boolean {
@@ -76,7 +80,7 @@ export function Avatar({ id, size = 32 }: { id: string; size?: number }) {
 }
 
 function ActTag({ act }: { act: string }) {
-  const tint = ACT_TINT[act] ?? { bg: '#EFEEE9', fg: c.graphite };
+  const tint = ACT_TINT[act] ?? { bg: c.ink, fg: c.graphite };
   return (
     <span
       className="rounded px-1.5 py-px font-semibold"

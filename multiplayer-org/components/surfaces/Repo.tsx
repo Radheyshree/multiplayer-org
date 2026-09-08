@@ -46,10 +46,10 @@ const TABS: Array<{ id: RepoTab; label: string }> = [
 ];
 
 const PILL: Record<PullRequest['state'], { bg: string; fg: string; label: string }> = {
-  open: { bg: '#E8F5EE', fg: c.live, label: 'open' },
+  open: { bg: c.liveSoft, fg: c.live, label: 'open' },
   merged: { bg: c.signalSoft, fg: c.signal, label: 'merged' },
-  closed: { bg: '#F1F0EC', fg: c.mute, label: 'closed' },
-  draft: { bg: '#F1F0EC', fg: c.graphite, label: 'draft' },
+  closed: { bg: c.ink, fg: c.mute, label: 'closed' },
+  draft: { bg: c.ink, fg: c.graphite, label: 'draft' },
 };
 
 function Pill({ state }: { state: PullRequest['state'] }) {
@@ -110,7 +110,7 @@ function TokenPanel({ ref_, onSaved }: { ref_: RepoRef; onSaved: () => void }) {
   };
 
   return (
-    <div className="mt-3 rounded-md p-3" style={{ background: '#FBFBF9', border: `1px solid ${c.line}` }}>
+    <div className="mt-3 rounded-md p-3" style={{ background: c.ink, border: `1px solid ${c.line}` }}>
       <div style={{ ...eyebrow, color: c.graphite }}>{label} access token</div>
       <p className="mt-1.5 text-[12.5px]" style={{ color: c.graphite }}>
         {ref_.host === 'github'
@@ -131,7 +131,7 @@ function TokenPanel({ ref_, onSaved }: { ref_: RepoRef; onSaved: () => void }) {
           onClick={submit}
           disabled={busy || !value.trim()}
           className="shrink-0 rounded px-3 py-1.5 text-[12.5px] font-medium disabled:opacity-40"
-          style={{ background: c.signal, color: '#fff' }}
+          style={{ background: c.signal, color: c.signalText }}
         >
           {busy ? 'Saving…' : 'Save'}
         </button>
@@ -161,7 +161,7 @@ function Failure({
   const needsToken = kind === 'auth' || kind === 'notfound';
 
   return (
-    <div className="rounded-lg p-4" style={{ background: '#FCF9F6', border: `1px solid #EBDDD0` }}>
+    <div className="rounded-lg p-4" style={{ background: c.attentionSoft, border: `1px solid ${c.line}` }}>
       <div className="flex items-baseline gap-2">
         <span style={{ ...eyebrow, color: c.attention }}>
           {kind === 'blocked'

@@ -1,90 +1,27 @@
 /**
- * The app catalogue.
+ * The workspace's real app registry.
  *
- * Two kinds of entry, deliberately shown side by side:
- *   - SURFACES are built into this shell and render from SDK data (Board, Chat,
- *     Desk, Scribe, Repos, Threadline).
- *   - REGISTERED apps are the real Xyne app registry — the org's own apps and
- *     the workspace marketplace, read through admin.*. Nothing is invented.
+ * `orgApps/catalogue.ts` lists the apps this shell mounts. This file lists the
+ * apps the WORKSPACE actually has installed, read through `admin.*` — the same
+ * registry the Xyne dashboard reads. The two are shown together in the store
+ * because they answer the same question from different sides: what can I open
+ * here, and what does this org already run.
+ *
+ * Nothing here is invented. If a list comes back empty, the store says so.
  */
 import { xyne } from './xyne';
 
-export type SurfaceId = 'threadline' | 'board' | 'chat' | 'desk' | 'scribe' | 'repos' | 'studio';
+export type Origin = 'org' | 'marketplace';
 
-export type Entry = {
-  key: string;
+export interface RegistryApp {
+  id: string;
   name: string;
   description: string;
-  /** Where it came from — shown as the faceplate's source strip. */
-  origin: 'surface' | 'org' | 'marketplace';
-  /** Set for built-in surfaces the shell can actually open. */
-  surface?: SurfaceId;
-  glyph: string;
+  origin: Origin;
   version?: string;
-  installed?: boolean;
-  /** Honest state for surfaces the SDK can only partly support. */
-  limited?: string;
-};
-
-/** The surfaces this shell renders itself. Order is the rail order. */
-export const SURFACES: Entry[] = [
-  {
-    key: 'surface:threadline',
-    surface: 'threadline',
-    name: 'Threadline',
-    description: 'Follow one thing across tickets, mail and calls in a single thread.',
-    origin: 'surface',
-    glyph: '⌘',
-  },
-  {
-    key: 'surface:studio',
-    surface: 'studio',
-    name: 'Studio',
-    description: 'Build a Space app by talking to a Claw agent — preview, code, and followups.',
-    origin: 'surface',
-    glyph: '\u2726',
-  },
-  {
-    key: 'surface:board',
-    surface: 'board',
-    name: 'Tickets Board',
-    description: 'Kanban over a board’s stages. Open a card, reassign, move it on.',
-    origin: 'surface',
-    glyph: '▤',
-  },
-  {
-    key: 'surface:chat',
-    surface: 'chat',
-    name: 'Xyne Chat',
-    description: 'Channels, threads and replies with unread state.',
-    origin: 'surface',
-    glyph: '◈',
-  },
-  {
-    key: 'surface:desk',
-    surface: 'desk',
-    name: 'Xyne Desk',
-    description: 'The support inbox — email-driven tickets, read and reply.',
-    origin: 'surface',
-    glyph: '✉',
-  },
-  {
-    key: 'surface:scribe',
-    surface: 'scribe',
-    name: 'Xyne Scribe',
-    description: 'Live, upcoming and past calls, with participants and recordings.',
-    origin: 'surface',
-    glyph: '◉',
-  },
-  {
-    key: 'surface:repos',
-    surface: 'repos',
-    name: 'GitHub & Bitbucket',
-    description: 'Browse GitHub and Bitbucket inside the shell — repos, branches, commits and pull requests.',
-    origin: 'surface',
-    glyph: '⑂',
-  },
-];
+  /** Present in this workspace's installed set. */
+  installed: boolean;
+}
 
 type RawApp = {
   id: string;
@@ -94,20 +31,33 @@ type RawApp = {
   scope?: string;
 };
 
-function toEntry(a: RawApp, origin: 'org' | 'marketplace', installed: Set<string>): Entry {
+function toApp(a: RawApp, origin: Origin, installed: Set<string>): RegistryApp {
   return {
-    key: a.id,
+    id: a.id,
     name: a.name || a.id,
     description: a.description || 'No description provided.',
     origin,
-    glyph: (a.name || '?').trim().charAt(0).toUpperCase() || '?',
     ...(a.version ? { version: a.version } : {}),
     installed: installed.has(a.id),
   };
 }
 
-/** Read the real registry. Each list is independent — one failing must not blank the store. */
-export async function loadRegistry(): Promise<{ org: Entry[]; marketplace: Entry[]; error?: string }> {
+export interface Registry {
+  org: RegistryApp[];
+  marketplace: RegistryApp[];
+  /** Set when a list failed. The rest still renders — see below. */
+  error?: string;
+}
+
+/**
+ * Read the registry.
+ *
+ * `allSettled`, not `all`: these are three independent admin endpoints and a
+ * permission gap on any one of them is normal. Failing the whole store because
+ * the marketplace list 403s would hide the org's own apps, which is the half
+ * that matters.
+ */
+export async function loadRegistry(): Promise<Registry> {
   const { spaces } = await xyne();
   const me = await spaces.users.me();
 
@@ -126,31 +76,17 @@ export async function loadRegistry(): Promise<{ org: Entry[]; marketplace: Entry
 
   const org =
     orgRes.status === 'fulfilled'
-      ? (orgRes.value as unknown as RawApp[]).map(a => toEntry(a, 'org', installed))
+      ? (orgRes.value as unknown as RawApp[]).map((a) => toApp(a, 'org', installed))
       : [];
   const marketplace =
     marketRes.status === 'fulfilled'
-      ? (marketRes.value as unknown as RawApp[]).map(a => toEntry(a, 'marketplace', installed))
+      ? (marketRes.value as unknown as RawApp[]).map((a) => toApp(a, 'marketplace', installed))
       : [];
 
-  const failed = [orgRes, marketRes].filter(r => r.status === 'rejected').length;
+  const failed = [orgRes, marketRes].filter((r) => r.status === 'rejected').length;
   return {
     org,
     marketplace,
-    ...(failed ? { error: `${failed} registry list(s) failed to load.` } : {}),
+    ...(failed ? { error: `${failed} registry list${failed > 1 ? 's' : ''} could not be read.` } : {}),
   };
-}
-
-/** Which surfaces the user has pinned to the rail. Per-user, so it follows them. */
-const PINS = 'pins';
-
-export async function loadPins(): Promise<string[]> {
-  const { storage } = await xyne();
-  const rec = await storage.collection<{ keys: string[] }>(PINS).get('rail', { scope: 'user' });
-  return rec?.value.keys ?? SURFACES.slice(0, 4).map(s => s.key);
-}
-
-export async function savePins(keys: string[]): Promise<void> {
-  const { storage } = await xyne();
-  await storage.collection<{ keys: string[] }>(PINS).put('rail', { keys }, { scope: 'user' });
 }

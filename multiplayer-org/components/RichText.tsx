@@ -73,7 +73,7 @@ function walk(node: Node, out: ReactNode[], key: { n: number }): void {
       <code
         key={`c${key.n++}`}
         className="rounded px-1 py-px"
-        style={{ fontFamily: mono, fontSize: '11.5px', background: '#F2F1EC' }}
+        style={{ fontFamily: mono, fontSize: '11.5px', background: c.ink }}
       >
         {el.textContent}
       </code>,

@@ -27,27 +27,29 @@ export interface CatalogueEntry {
 export const CATALOGUE: CatalogueEntry[] = [
   {
     id: 'kanban-board',
-    name: 'Kanban Board',
-    blurb: "The track's board — stages as columns, tickets in them, moves that stick.",
+    name: 'Tickets Board',
+    blurb:
+      "The track's board — stages as columns, drag to move, open a card to edit it, and create tickets in place.",
     group: 'Delivery',
     status: 'live',
-    posts: 'stage moves and assignments',
+    posts: 'stage moves, edits, assignments and new tickets',
   },
   {
     id: 'xyne-desk',
     name: 'Xyne Desk',
-    blurb: 'Triage a ticket and log the work against it.',
+    blurb: 'The support inbox — email-driven tickets, read the mail thread and reply into it.',
     group: 'Delivery',
     status: 'live',
-    posts: 'work notes',
+    posts: 'replies to a support ticket',
   },
   {
     id: 'github',
-    name: 'GitHub',
-    blurb: 'Branches, pull requests and reviews attached to the ticket.',
+    name: 'GitHub & Bitbucket',
+    blurb:
+      'Browse repositories, pull requests, commits and branches inside the shell, and attach any of them to a ticket.',
     group: 'Engineering',
-    status: 'planned',
-    posts: 'PR opened, merged, review left',
+    status: 'live',
+    posts: 'links to pull requests, commits and repositories',
   },
   {
     id: 'xyne-code',
@@ -100,18 +102,19 @@ export const CATALOGUE: CatalogueEntry[] = [
   {
     id: 'xyne-chat',
     name: 'Xyne Chat',
-    blurb: 'The wider conversation around this work.',
+    blurb:
+      'The wider conversation around this work — channels and threads, following the track and ticket you have open.',
     group: 'Knowledge',
-    status: 'planned',
-    posts: 'linked discussions',
+    status: 'live',
+    posts: 'nothing on its own — it shows the conversation the other apps write to',
   },
   {
     id: 'xyne-scribe',
     name: 'Xyne Scribe',
-    blurb: 'Notes, transcripts and summaries.',
+    blurb: 'Live, upcoming and past calls with their participants and recordings.',
     group: 'Knowledge',
-    status: 'planned',
-    posts: 'summaries and decisions',
+    status: 'live',
+    posts: 'a call linked to the ticket it was about',
   },
   {
     id: 'design-hub',
@@ -133,4 +136,27 @@ export const GROUPS: CatalogueEntry['group'][] = [
 
 export function catalogueEntry(id: string): CatalogueEntry | undefined {
   return CATALOGUE.find((a) => a.id === id);
+}
+
+/**
+ * Apps listed in the store but not mounted, and vice versa.
+ *
+ * The catalogue and the registry are two lists joined by a string id, which is
+ * exactly the kind of pair that drifts: a rename lands in one and not the
+ * other, the store shows an "Open" button for an app that no longer exists, and
+ * nobody notices until a demo. This makes the drift visible instead.
+ *
+ * Takes the mounted ids as an argument rather than importing the registry,
+ * because the registry imports this file — a cycle here would be resolved at
+ * runtime in an order that depends on the bundler.
+ */
+export function catalogueDrift(mountedIds: string[]): { missing: string[]; stale: string[] } {
+  const listed = new Set(CATALOGUE.map((a) => a.id));
+  const mounted = new Set(mountedIds);
+  return {
+    // Mounted but not in the store: it works and nobody can find it.
+    missing: mountedIds.filter((id) => !listed.has(id)),
+    // Marked live in the store but not mounted: the Open button would fail.
+    stale: CATALOGUE.filter((a) => a.status === 'live' && !mounted.has(a.id)).map((a) => a.id),
+  };
 }

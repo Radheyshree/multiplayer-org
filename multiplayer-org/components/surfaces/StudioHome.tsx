@@ -134,7 +134,7 @@ export function StudioHome({
           className="mt-7 rounded-xl p-px transition-all"
           style={{
             background: focused
-              ? `linear-gradient(120deg, ${c.signal}, #8A45C4, ${c.live})`
+              ? `linear-gradient(120deg, ${c.signal}, ${c.agent}, ${c.live})`
               : c.line,
             boxShadow: focused ? '0 8px 30px rgba(75,70,229,0.10)' : 'none',
           }}

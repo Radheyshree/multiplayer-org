@@ -44,7 +44,7 @@ function RepoCard({ repo, onOpen }: { repo: Connected; onOpen: (r: RepoRef) => v
     <>
       <div
         className="flex items-center justify-between rounded-t-lg px-3 py-1.5"
-        style={{ background: '#F5F4F0', borderBottom: `1px solid ${c.line}` }}
+        style={{ background: c.ink, borderBottom: `1px solid ${c.line}` }}
       >
         <span style={{ ...eyebrow, color: c.mute }}>{repo.ref ? HOST_LABEL[repo.ref.host] : hostOf(href)}</span>
         {repo.prefix && <span style={{ fontFamily: mono, fontSize: '10px', color: c.mute }}>{repo.prefix}/</span>}
@@ -62,7 +62,7 @@ function RepoCard({ repo, onOpen }: { repo: Connected; onOpen: (r: RepoRef) => v
               <span
                 key={b}
                 className="rounded px-1.5 py-0.5"
-                style={{ fontFamily: mono, fontSize: '10px', background: '#F2F1EC', color: c.graphite }}
+                style={{ fontFamily: mono, fontSize: '10px', background: c.ink, color: c.graphite }}
               >
                 {b}
               </span>
@@ -147,7 +147,7 @@ export function Start({
               >
                 <span
                   className="grid size-9 shrink-0 place-items-center rounded-md text-[15px]"
-                  style={{ background: c.ink, color: c.paper }}
+                  style={{ background: c.text, color: c.paper }}
                   aria-hidden
                 >
                   {h.glyph}
@@ -175,7 +175,7 @@ export function Start({
 
         {busy && <p style={{ fontFamily: mono, fontSize: '11px', color: c.mute }}>reading workspace…</p>}
         {error && (
-          <p className="rounded-md px-3 py-2 text-[12.5px]" style={{ background: '#FCF2EC', color: c.attention }}>
+          <p className="rounded-md px-3 py-2 text-[12.5px]" style={{ background: c.attentionSoft, color: c.attention }}>
             {error}
           </p>
         )}

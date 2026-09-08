@@ -17,7 +17,7 @@ export function Row({ label, children }: { label: string; children: React.ReactN
   );
 }
 
-export function AssigneePicker({ current, onPick }: { current?: string; onPick: (id: string) => void }) {
+export function AssigneePicker({ current, onPick }: { current?: string | null; onPick: (id: string) => void }) {
   const [q, setQ] = useState('');
   const hits = q.trim()
     ? allPeople().filter(p => p.name.toLowerCase().includes(q.trim().toLowerCase())).slice(0, 6)

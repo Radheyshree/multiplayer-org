@@ -4,14 +4,38 @@
  * Cards drag between stages, open into an editable detail pane, and can be
  * created. Moves apply optimistically and roll back if the server refuses,
  * which on a rules-driven board is a real answer rather than a failure.
+ *
+ * Three scopes, and the default is the shell's:
+ *
+ *   track      the board mapped to the track you have open. This is what the
+ *              shell means by an app — a workspace over the whole track — and
+ *              it is what makes a move postable to the right ledger.
+ *   board      any board in any project, picked by hand. Kept because the
+ *              shell can be opened with nothing selected, and because a board
+ *              is a legitimate unit of work on its own.
+ *   my tickets everything assigned to you, across boards. Its columns are
+ *              whatever stages came back, which is a different vocabulary from
+ *              a single board's — hence no drag target validation there.
+ *
+ * Moves go through the shell's `moveTicket`, not a bare `transitionStage`:
+ * transitionStage resolves `void`, so a resolved promise means "accepted", not
+ * "moved". An approval-gated board routes the move into a request instead, and
+ * a card that advances on resolve is then lying. See lib/kanban.ts.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  allowedTargets,
+  describeMoveError,
+  loadBoardView,
+  moveTicket,
+  type Stage as BoardStage,
+  type StageTransition,
+} from '../../lib/kanban';
 import { initials, loadDirectory, nameOf, resolvePeople, tintFor } from '../../lib/people';
-import { c, eyebrow, mono } from '../../lib/theme';
+import { c, eyebrow, mono, priorityColor } from '../../lib/theme';
 import {
   createTicket,
   loadBoard,
-  moveToStage,
   myTickets,
   PRIORITIES,
   stageName,
@@ -19,28 +43,28 @@ import {
   type Stage,
   type Ticket,
 } from '../../lib/tickets';
+import { toWorkItem } from '../../lib/workitem';
+import type { OrgAppProps } from '../../orgApps/registry';
 import { xyne } from '../../lib/xyne';
 import { NewTicket } from '../board/NewTicket';
 import { TicketView } from '../board/TicketView';
 
 type Project = { id: string; name?: string; code?: string };
 type BoardRow = { id: string; name?: string };
-type Mode = 'my-tickets' | 'board';
+type Mode = 'track' | 'my-tickets' | 'board';
 
-const PRIORITY_TINT: Record<string, string> = {
-  CRITICAL: '#C0392B',
-  HIGH: '#C8622F',
-  MEDIUM: '#8A6A00',
-  LOW: '#7A8090',
-};
-
-export function Board() {
-  const [mode, setMode] = useState<Mode>('my-tickets');
+export function Board({ scope, postUpdate, focusTicket, focusedTicketId }: OrgAppProps) {
+  const [mode, setMode] = useState<Mode>(scope ? 'track' : 'my-tickets');
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState('');
   const [boards, setBoards] = useState<BoardRow[]>([]);
   const [boardId, setBoardId] = useState('');
   const [stages, setStages] = useState<Stage[]>([]);
+  /** Full stage rows for the open board — `moveTicket` needs the id, not the name. */
+  const [boardStages, setBoardStages] = useState<BoardStage[]>([]);
+  /** The board's transition rules, so a drag can be refused before it is made. */
+  const [transitions, setTransitions] = useState<StageTransition[]>([]);
+  const [trackBoardId, setTrackBoardId] = useState('');
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [nonLinear, setNonLinear] = useState(false);
   const [openId, setOpenId] = useState('');
@@ -54,6 +78,12 @@ export function Board() {
   const [composeStage, setComposeStage] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  /** Follow the shell: opening a different track puts the board back on it. */
+  useEffect(() => {
+    if (scope) setMode('track');
+  }, [scope?.channelId]);
 
   useEffect(() => {
     void (async () => {
@@ -81,14 +111,44 @@ export function Board() {
     setBusy(true);
     setError(null);
     try {
-      const rows = mode === 'my-tickets' ? await myTickets() : boardId ? (await loadBoard(boardId)).tickets : [];
+      let rows: Ticket[] = [];
       if (mode === 'my-tickets') {
+        rows = await myTickets();
         setStages([]);
+        setBoardStages([]);
+        setTransitions([]);
+        setTrackBoardId('');
         setNonLinear(false);
+      } else if (mode === 'track' && scope) {
+        // listKanban filtered by sourceChannels — the board rows that belong to
+        // THIS track, not every ticket on a board several tracks share.
+        const view = await loadBoardView(scope.channelId);
+        if (!view) {
+          setStages([]);
+          setBoardStages([]);
+          setTransitions([]);
+          setTrackBoardId('');
+          setTickets([]);
+          setError(`#${scope.trackName} has no board mapped to it.`);
+          return;
+        }
+        setBoardStages(view.stages);
+        setStages(view.stages);
+        setTransitions(view.transitions);
+        setTrackBoardId(view.boardId);
+        // A board with no transition rules is unrestricted rather than frozen —
+        // same reading as allowedTargets(), so the two cannot disagree.
+        setNonLinear(view.transitions.length > 0);
+        rows = [...view.columns.values()].flat();
       } else if (boardId) {
+        // One read, not two: this used to call loadBoard twice per refresh.
         const b = await loadBoard(boardId);
         setStages(b.stages);
+        setBoardStages([]);
+        setTransitions([]);
+        setTrackBoardId('');
         setNonLinear(b.nonLinear);
+        rows = b.tickets;
       }
       setTickets(rows);
       // The directory only holds its first window, so ids outside it (assignees,
@@ -99,7 +159,7 @@ export function Board() {
     } finally {
       setBusy(false);
     }
-  }, [mode, boardId]);
+  }, [mode, boardId, scope?.channelId, scope?.trackName]);
 
   useEffect(() => {
     void refresh();
@@ -109,9 +169,9 @@ export function Board() {
    *  columns are whatever stages came back (a different vocabulary). */
   const columns = useMemo(
     () =>
-      mode === 'board'
-        ? stages.map(stageName)
-        : [...new Set(tickets.map(t => t.stageName ?? 'Unstaged'))],
+      mode === 'my-tickets'
+        ? [...new Set(tickets.map(t => t.stageName ?? 'Unstaged'))]
+        : stages.map(stageName),
     [mode, stages, tickets],
   );
 
@@ -129,7 +189,20 @@ export function Board() {
     [tickets, priorityFilter, mineOnly, meId, query],
   );
 
-  /** Optimistic move; the server's refusal is authoritative, so roll back. */
+  /**
+   * Optimistic move, then find out what actually happened.
+   *
+   * Three outcomes, and only one of them is "the card moved":
+   *   applied  the ticket's own row now reads the target stage.
+   *   queued   the board routed it into an approval. The card goes BACK — it
+   *            has not moved — and the person is told why it sprang back,
+   *            because a silent snap-back reads as a bug.
+   *   refused  the server rejected it; its message is the board's own rule.
+   *
+   * Whatever happens, nothing is written to the ledger until the server has
+   * confirmed it. Posting "moved to Done" for a move that was only requested is
+   * exactly the kind of false record this ledger exists to prevent.
+   */
   const drop = async (toStage: string) => {
     const id = dragId;
     setDragId('');
@@ -137,14 +210,87 @@ export function Board() {
     const t = tickets.find(x => x.id === id);
     if (!t || !id || t.stageName === toStage) return;
     const before = t.stageName;
+    const target = boardStages.find(st => st.name === toStage);
+
+    setNotice(null);
+    setError(null);
+    if (legalTargets && !legalTargets.has(toStage)) {
+      setNotice(`This board does not allow ${before ?? '—'} → ${toStage}.`);
+      return;
+    }
     setTickets(prev => prev.map(x => (x.id === id ? { ...x, stageName: toStage } : x)));
+    const rollback = () => setTickets(prev => prev.map(x => (x.id === id ? { ...x, stageName: before } : x)));
+
     try {
-      await moveToStage(id, toStage, nonLinear);
+      if (!target) {
+        // "My tickets" spans boards, so there is no stage row to move against
+        // and no transition set to validate with. Refuse rather than guess.
+        rollback();
+        setError('Open the track or a board to move a card — "My tickets" spans boards.');
+        return;
+      }
+      const { applied, queued } = await moveTicket({ id }, target);
+      const key = t.xyneId ?? 'This ticket';
+
+      // Every outcome is recorded, including the ones that did not move the
+      // card. "We tried to move this and the board said no" is exactly the kind
+      // of thing the next person needs and nobody remembers to write down.
+      await report(
+        t,
+        applied
+          ? `Moved ${key} to **${toStage}**.`
+          : queued
+            ? `Requested a move of ${key} to **${toStage}** — waiting on approval.`
+            : `Attempted a move of ${key} to **${toStage}**; the board did not apply it.`,
+        'activity',
+      );
+
+      if (!applied) {
+        rollback();
+        setNotice(
+          queued
+            ? `${key} needs approval to enter ${toStage} — a stage request is open.`
+            : `${key} did not move to ${toStage}. Refresh to see where it is.`,
+        );
+      }
     } catch (e) {
-      setTickets(prev => prev.map(x => (x.id === id ? { ...x, stageName: before } : x)));
-      setError(e instanceof Error ? e.message : String(e));
+      rollback();
+      setError(describeMoveError(e));
     }
   };
+
+  /**
+   * Write what the app just did into the ticket's ledger.
+   *
+   * The shell owns the target — it reads `conversationId` off the item we hand
+   * it — so this cannot post to the wrong conversation even if the board is
+   * showing several tracks. A ticket with no conversation is skipped silently:
+   * the move still happened, and failing the move because its record could not
+   * be written would be the wrong trade.
+   */
+  const report = async (t: Ticket, what: string, kind: 'activity' | 'note') => {
+    const item = toWorkItem(t);
+    if (!item) return;
+    await postUpdate(item, what, kind).catch(() => {
+      setNotice('The move landed, but its note could not be posted to the ticket.');
+    });
+  };
+
+  /**
+   * Which columns the dragged card may legally land in.
+   *
+   * The server is the real authority — this only stops a drag that the board
+   * would refuse anyway, so the person finds out while dragging rather than by
+   * watching the card spring back. Null means "no opinion": either nothing is
+   * being dragged, or we are in a mode with no transition set to consult.
+   */
+  const legalTargets = useMemo<Set<string> | null>(() => {
+    if (!dragId || boardStages.length === 0) return null;
+    const card = tickets.find(t => t.id === dragId);
+    const from = boardStages.find(st => st.name === card?.stageName);
+    if (!from) return null;
+    return new Set(allowedTargets(from, boardStages, transitions).map(st => st.name));
+  }, [dragId, tickets, boardStages, transitions]);
 
   const open = tickets.find(t => t.id === openId) ?? null;
 
@@ -152,9 +298,15 @@ export function Board() {
     return (
       <TicketView
         ticket={open}
-        stages={mode === 'board' ? stages : columns.map(n => ({ name: n }))}
-        nonLinear={nonLinear}
+        // Real stage rows when we have a board (they carry the ids the move
+        // path prefers); bare names when "My tickets" spans several.
+        stages={mode === 'my-tickets' ? columns.map(n => ({ name: n })) : stages}
+        gated={nonLinear}
+        // The shell's ledger is already showing this ticket's thread — opening a
+        // card focuses it — so the detail view does not draw a second copy.
+        showConversation={false}
         onChanged={patch => setTickets(prev => prev.map(t => (t.id === open.id ? { ...t, ...patch } : t)))}
+        onReport={what => void report(open, what, 'activity')}
         onBack={() => setOpenId('')}
       />
     );
@@ -167,17 +319,22 @@ export function Board() {
         <header className="flex flex-wrap items-center gap-2 px-6 pt-5 pb-3">
           <h1 className="text-[20px] leading-none font-semibold tracking-tight">Tickets</h1>
 
-          <div className="flex rounded-md p-0.5" style={{ background: '#EFEEE9', border: `1px solid ${c.line}` }}>
-            {(['my-tickets', 'board'] as Mode[]).map(m => (
-              <button
-                key={m}
-                onClick={() => setMode(m)}
-                className="rounded px-2.5 py-1 text-[12px] font-medium"
-                style={{ background: mode === m ? c.card : 'transparent', color: mode === m ? c.text : c.graphite }}
-              >
-                {m === 'my-tickets' ? 'My tickets' : 'By board'}
-              </button>
-            ))}
+          <div className="flex rounded-md p-0.5" style={{ background: c.ink, border: `1px solid ${c.line}` }}>
+            {(['track', 'my-tickets', 'board'] as Mode[]).map(m => {
+              // "This track" is only offered when there IS one — otherwise the
+              // control has a tab that shows an error, which is not a choice.
+              if (m === 'track' && !scope) return null;
+              return (
+                <button
+                  key={m}
+                  onClick={() => setMode(m)}
+                  className="rounded px-2.5 py-1 text-[12px] font-medium"
+                  style={{ background: mode === m ? c.card : 'transparent', color: mode === m ? c.text : c.graphite }}
+                >
+                  {m === 'track' ? `#${scope?.trackName ?? ''}` : m === 'my-tickets' ? 'My tickets' : 'By board'}
+                </button>
+              );
+            })}
           </div>
 
           {mode === 'board' && (
@@ -263,8 +420,22 @@ export function Board() {
         </header>
 
         {error && (
-          <p className="mx-6 mb-2 rounded-md px-3 py-2 text-[12.5px]" style={{ background: '#FCF2EC', color: c.attention }}>
+          <p className="mx-6 mb-2 rounded-md px-3 py-2 text-[12.5px]" style={{ background: c.attentionSoft, color: c.attention }}>
             {error}
+          </p>
+        )}
+
+        {/* A move that was accepted but not applied is not an error — the board
+            worked as configured. It gets its own, calmer, banner. */}
+        {notice && (
+          <p
+            className="mx-6 mb-2 flex items-start gap-2 rounded-md px-3 py-2 text-[12.5px]"
+            style={{ background: c.signalSoft, color: c.text }}
+          >
+            <span className="flex-1">{notice}</span>
+            <button onClick={() => setNotice(null)} className="shrink-0" style={{ color: c.mute }} aria-label="Dismiss">
+              ×
+            </button>
           </p>
         )}
 
@@ -282,6 +453,9 @@ export function Board() {
             {columns.map(name => {
               const cards = visible.filter(t => (t.stageName ?? 'Unstaged') === name);
               const isOver = overStage === name;
+              // Dimmed only while a card is actually in flight and this column
+              // is not one of its legal destinations.
+              const illegal = Boolean(legalTargets) && !legalTargets?.has(name) && dragId !== '';
               return (
                 <section
                   key={name}
@@ -296,8 +470,11 @@ export function Board() {
                   }}
                   className="flex w-64 shrink-0 flex-col rounded-lg transition-colors"
                   style={{
-                    background: isOver ? c.signalSoft : '#F5F4F0',
-                    border: `1px solid ${isOver ? c.signal : c.line}`,
+                    background: isOver && !illegal ? c.signalSoft : c.ink,
+                    border: `1px solid ${isOver ? (illegal ? c.attention : c.signal) : c.line}`,
+                    // Not `display: none` — a column that vanishes mid-drag moves
+                    // every other column sideways under the cursor.
+                    opacity: illegal ? 0.45 : 1,
                   }}
                 >
                   <div className="flex items-center justify-between px-3 py-2">
@@ -312,11 +489,19 @@ export function Board() {
                         draggable
                         onDragStart={() => setDragId(t.id)}
                         onDragEnd={() => setDragId('')}
-                        onClick={() => setOpenId(t.id)}
+                        // Opening a card does two things on purpose: it shows the
+                        // ticket, and it points the shell's chat pane at the same
+                        // ticket. The app and the conversation must never disagree
+                        // about what you are working on.
+                        onClick={() => {
+                          setOpenId(t.id);
+                          focusTicket(toWorkItem(t));
+                        }}
                         className="cursor-pointer rounded-md p-2.5 transition-shadow hover:shadow-sm"
                         style={{
                           background: c.card,
-                          border: `1px solid ${openId === t.id ? c.signal : c.line}`,
+                          border: `1px solid ${focusedTicketId === t.id || openId === t.id ? c.signal : c.line}`,
+                          boxShadow: focusedTicketId === t.id ? `0 0 0 1px ${c.signal}` : undefined,
                           opacity: dragId === t.id ? 0.4 : 1,
                         }}
                       >
@@ -325,7 +510,7 @@ export function Board() {
                             {t.xyneId ?? t.id.slice(0, 8)}
                           </span>
                           {t.priority && (
-                            <span style={{ fontFamily: mono, fontSize: '9px', color: PRIORITY_TINT[t.priority] }}>
+                            <span style={{ fontFamily: mono, fontSize: '9px', color: priorityColor(t.priority) }}>
                               {t.priority}
                             </span>
                           )}
@@ -358,7 +543,7 @@ export function Board() {
                       </article>
                     ))}
 
-                    {mode === 'board' && (
+                    {mode !== 'my-tickets' && (
                       <button
                         onClick={() => {
                           setComposeStage(name);
@@ -381,11 +566,18 @@ export function Board() {
       {composing && (
         <NewTicket
           projects={projects}
-          initialProjectId={projectId}
-          initialBoardId={boardId}
+          initialProjectId={mode === 'track' && scope ? scope.projectId : projectId}
+          initialBoardId={mode === 'track' ? trackBoardId : boardId}
           initialStage={composeStage}
+          {...(mode === 'track' && scope ? { initialChannelId: scope.channelId } : {})}
           knownTickets={tickets}
-          onCreated={() => void refresh()}
+          onCreated={created => {
+            // The create response already carries the new thread, so the ticket
+            // can be opened and written to without a follow-up read.
+            void report(created, `opened ${created.xyneId}: ${created.title ?? ''}`.trim(), 'activity');
+            focusTicket(toWorkItem(created));
+            void refresh();
+          }}
           onClose={() => setComposing(false)}
         />
       )}

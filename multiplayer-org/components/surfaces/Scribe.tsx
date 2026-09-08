@@ -4,10 +4,22 @@
  * Four listings share one row shape, so the tabs are a filter over the same
  * renderer. Participants arrive empty on the list rows, so they're fetched when
  * a call is opened.
+ *
+ * SCOPE, honestly: a call row carries `channelId`, so narrowing to the open
+ * track is a real filter and not a guess. But none of the four list calls takes
+ * a channel argument (see SDK-GAPS.md), so the narrowing happens after the
+ * read, not instead of it — this is a smaller list, not fewer requests. The
+ * toggle says "this track" rather than pretending the whole workspace is gone.
+ *
+ * What Scribe contributes to a ticket is a LINK. A call is not a ticket and
+ * cannot be made into one, but "this was discussed on Tuesday's call, here is
+ * the room and who was on it" is exactly the kind of fact that otherwise lives
+ * only in someone's memory.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { initials, nameOf, resolvePeople } from '../../lib/people';
 import { c, eyebrow, mono } from '../../lib/theme';
+import type { OrgAppProps } from '../../orgApps/registry';
 import { xyne } from '../../lib/xyne';
 
 type Call = {
@@ -38,7 +50,7 @@ function when(ca: Call): string {
   return new Date(t).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
-export function Scribe() {
+export function Scribe({ scope, postUpdate, focused }: OrgAppProps) {
   const [tab, setTab] = useState<Tab>('history');
   const [calls, setCalls] = useState<Call[]>([]);
   const [openId, setOpenId] = useState('');
@@ -46,6 +58,8 @@ export function Scribe() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
+  const [trackOnly, setTrackOnly] = useState(true);
+  const [linked, setLinked] = useState<string | null>(null);
 
   useEffect(() => {
     setBusy(true);
@@ -83,6 +97,59 @@ export function Scribe() {
 
   const current = calls.find(x => x.id === openId);
 
+  /** Calls on the open track. Empty is meaningful: this track has had none. */
+  const onTrack = useMemo(
+    () => (scope ? calls.filter(ca => ca.channelId === scope.channelId) : []),
+    [calls, scope?.channelId],
+  );
+  const scoped = Boolean(scope) && trackOnly;
+  const visible = scoped ? onTrack : calls;
+
+  /**
+   * Fall back to the workspace when the track has no calls in this tab.
+   *
+   * Landing on an empty list because of a filter you did not set is the worst
+   * default: it reads as "there are no calls" when there are 25. The toggle
+   * stays, and its counter still shows 0/25, so nothing is hidden — the opening
+   * view is just the one with something in it.
+   */
+  useEffect(() => {
+    if (scope && !busy && calls.length > 0 && onTrack.length === 0) setTrackOnly(false);
+  }, [scope?.channelId, busy, calls.length, onTrack.length]);
+
+  /** A new tab is a new question — re-offer the track filter. */
+  useEffect(() => {
+    setTrackOnly(true);
+  }, [tab, scope?.channelId]);
+
+  /**
+   * Record this call against the ticket the shell has focused.
+   *
+   * A call is not a ticket and there is no join table to write to — so the link
+   * is a message in the ticket's own conversation, which is the one place every
+   * surface already writes. It carries the room link so it stays useful after
+   * the call has ended.
+   */
+  const link = async (ca: Call): Promise<void> => {
+    if (!focused) return;
+    setLinked(null);
+    setError(null);
+    const who = people.map(pp => pp.displayName ?? pp.email).filter(Boolean);
+    const body = [
+      `Linked call: **${ca.title ?? 'Untitled call'}** (${when(ca)})`,
+      ca.roomLink ? `Room: ${ca.roomLink}` : null,
+      who.length ? `On the call: ${who.join(', ')}` : null,
+    ]
+      .filter(Boolean)
+      .join('\n');
+    try {
+      await postUpdate(focused, body, 'note');
+      setLinked(`Linked to ${focused.xyneId}.`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
   return (
     <div className="grid h-full" style={{ gridTemplateColumns: '24rem 1fr' }} data-tick={tick}>
       <aside className="flex min-h-0 flex-col" style={{ borderRight: `1px solid ${c.line}` }}>
@@ -102,14 +169,35 @@ export function Scribe() {
           ))}
         </div>
 
+        {scope && (
+          <button
+            onClick={() => setTrackOnly(v => !v)}
+            className="mx-3 mb-2 rounded-md border px-2 py-1 text-left text-[11.5px]"
+            style={{
+              borderColor: scoped ? c.signal : c.line,
+              color: scoped ? c.signal : c.graphite,
+              background: scoped ? c.signalSoft : c.card,
+            }}
+          >
+            {scoped ? `#${scope.trackName} only` : 'All calls'}
+            <span className="ml-1.5" style={{ fontFamily: mono, fontSize: '10px', color: c.mute }}>
+              {onTrack.length}/{calls.length}
+            </span>
+          </button>
+        )}
+
         <div className="min-h-0 flex-1 overflow-y-auto">
           {busy && <p className="px-3" style={{ fontFamily: mono, fontSize: '11px', color: c.mute }}>loading…</p>}
-          {!busy && calls.length === 0 && (
+          {!busy && visible.length === 0 && (
             <p className="px-3 text-[12.5px]" style={{ color: c.graphite }}>
-              {tab === 'active' ? 'Nobody is on a call right now.' : 'Nothing here.'}
+              {scoped && calls.length > 0
+                ? `No calls on #${scope?.trackName} here — ${calls.length} elsewhere in the workspace.`
+                : tab === 'active'
+                  ? 'Nobody is on a call right now.'
+                  : 'Nothing here.'}
             </p>
           )}
-          {calls.map(ca => (
+          {visible.map(ca => (
             <button
               key={ca.id}
               onClick={() => void open(ca)}
@@ -136,7 +224,7 @@ export function Scribe() {
 
       <section className="min-h-0 overflow-y-auto">
         {error && (
-          <p className="m-3 rounded-md px-3 py-2 text-[12.5px]" style={{ background: '#FCF2EC', color: c.attention }}>
+          <p className="m-3 rounded-md px-3 py-2 text-[12.5px]" style={{ background: c.attentionSoft, color: c.attention }}>
             {error}
           </p>
         )}
@@ -164,6 +252,23 @@ export function Scribe() {
                 {tab === 'active' ? 'Join call' : tab === 'recordings' ? 'Open recording' : 'Open room'}
               </a>
             )}
+
+            {/* The one thing this surface can put into a ticket. Disabled with a
+                reason rather than hidden — "why can't I attach this" is a worse
+                question than a greyed button that says what is missing. */}
+            <div className="mt-4 flex items-center gap-2.5">
+              <button
+                onClick={() => void link(current)}
+                disabled={!focused}
+                className="rounded-md border px-3 py-1.5 text-[12.5px] font-medium disabled:opacity-45"
+                style={{ borderColor: c.line, color: c.text, background: c.card }}
+              >
+                {focused ? `Link to ${focused.xyneId}` : 'Link to a ticket'}
+              </button>
+              <span className="text-[11.5px]" style={{ color: c.mute }}>
+                {linked ?? (focused ? 'Records this call in the ticket’s chat.' : 'Focus a ticket first.')}
+              </span>
+            </div>
 
             <div className="mt-7">
               <div style={{ ...eyebrow, color: c.graphite }}>Participants</div>

@@ -291,7 +291,10 @@ export async function loadTicketPage(
  * navigating to each one and losing what you were doing. The target still comes
  * from a ticket the caller already holds, never from free text.
  */
-export async function postToTicket(ticket: Ticket, content: string): Promise<string> {
+export async function postToTicket(
+  ticket: { conversationId: string },
+  content: string,
+): Promise<string> {
   const { messageId } = await spaces.messages.send({
     conversationId: ticket.conversationId,
     content,

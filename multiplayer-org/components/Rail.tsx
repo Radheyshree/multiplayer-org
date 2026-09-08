@@ -122,7 +122,7 @@ export function Rail({
     <nav className="flex-1 min-w-0 min-h-0 flex flex-col">
       {/* Reachable from every level. */}
       <div className="p-2 flex flex-col gap-0.5 border-b border-border">
-        <NavButton active={view === 'create'} icon={<Plus />} label="create App"
+        <NavButton active={view === 'create'} icon={<Plus />} label="Build an app"
           onClick={() => onView('create')} />
         <NavButton active={view === 'store'} icon={<Store />} label="All Apps"
           onClick={() => onView('store')} />

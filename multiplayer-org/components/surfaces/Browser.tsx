@@ -19,6 +19,7 @@ import { c, eyebrow, mono } from '../../lib/theme';
 import type { HostId, RepoRef } from '../../lib/codehost';
 import { handoffHint, isDesktop, openInHost } from '../../lib/host';
 import { externalUrl, pageTitle, pageUrl, parsePageUrl, samePage, type Page, type RepoTab } from '../../lib/nav';
+import type { OrgAppProps } from '../../orgApps/registry';
 import { Repo } from './Repo';
 import { Start } from './Start';
 
@@ -66,11 +67,15 @@ function Control({
   );
 }
 
-export function Browser() {
+export function Browser({
+  postUpdate,
+  focused,
+}: Pick<OrgAppProps, 'postUpdate' | 'focused'>) {
   const [tabs, setTabs] = useState<Tab[]>(() => [newTab()]);
   const [activeId, setActiveId] = useState<string>(() => '');
   const [draft, setDraft] = useState('');
   const [bad, setBad] = useState(false);
+  const [attached, setAttached] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // The first tab's id is generated in the initialiser, so adopt it on mount
@@ -149,6 +154,26 @@ export function Browser() {
     if (page.kind === 'repo') navigate({ kind: 'repo', ref: page.ref, tab });
   };
 
+  /**
+   * Record the page on screen against the focused ticket.
+   *
+   * The link written is `externalUrl(page)` — github.com's own address, not our
+   * internal one — because the point is that it still resolves for someone
+   * reading the ticket in Xyne, in Slack, or in six months.
+   */
+  const attach = async (): Promise<void> => {
+    if (!focused || page.kind === 'start') return;
+    setAttached(null);
+    try {
+      await postUpdate(focused, `Linked **${pageTitle(page)}** — ${externalUrl(page)}`, 'note');
+      setAttached('Attached ✓');
+      window.setTimeout(() => setAttached(null), 2500);
+    } catch {
+      setAttached('Could not attach');
+      window.setTimeout(() => setAttached(null), 2500);
+    }
+  };
+
   const canBack = active.index > 0;
   const canForward = active.index < active.history.length - 1;
 
@@ -168,7 +193,7 @@ export function Browser() {
               <button
                 onClick={() => setActiveId(t.id)}
                 className="min-w-0 flex-1 truncate text-left text-[12.5px]"
-                style={{ color: on ? c.text : '#B9BECC' }}
+                style={{ color: on ? c.text : c.mute }}
                 title={title}
               >
                 {title}
@@ -177,7 +202,7 @@ export function Browser() {
                 onClick={() => close(t.id)}
                 aria-label={`Close ${title}`}
                 className="shrink-0 rounded-full px-1 text-[12px] leading-none"
-                style={{ color: on ? c.mute : '#6C7488' }}
+                style={{ color: c.mute }}
               >
                 ×
               </button>
@@ -189,7 +214,7 @@ export function Browser() {
           aria-label="New tab"
           title="New tab"
           className="mb-1 grid size-6 shrink-0 place-items-center rounded text-[14px]"
-          style={{ color: '#B9BECC' }}
+          style={{ color: c.mute }}
         >
           +
         </button>
@@ -237,6 +262,25 @@ export function Browser() {
             </span>
           )}
         </div>
+
+        {/* Attach before exit: the reason to be in here rather than in Chrome
+            is that the page you are reading can be pinned to the work it is
+            about. Disabled with the reason showing, never silently absent. */}
+        <button
+          onClick={() => void attach()}
+          disabled={!focused || page.kind === 'start'}
+          title={
+            !focused
+              ? 'Focus a ticket in the sidebar or the board first'
+              : page.kind === 'start'
+                ? 'Open a repository first'
+                : `Record this page on ${focused.xyneId}`
+          }
+          className="shrink-0 rounded-full px-3 py-1 text-[12px] font-medium disabled:opacity-40"
+          style={{ background: c.card, color: c.text, border: `1px solid ${c.line}` }}
+        >
+          {attached ?? (focused ? `Attach to ${focused.xyneId}` : 'Attach to ticket')}
+        </button>
 
         <button
           onClick={() => openInHost(externalUrl(page))}

@@ -147,7 +147,7 @@ export function StudioVersions({
         {showPayload ? (
           <pre
             className="mt-3 max-h-72 overflow-auto rounded-md p-3 text-[11px] leading-relaxed"
-            style={{ fontFamily: mono, background: c.ink, color: '#D7DBE6' }}
+            style={{ fontFamily: mono, background: c.ink, color: c.graphite }}
           >
 {JSON.stringify(
   {
