@@ -1,0 +1,142 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  /* Cool blue-grey neutrals — the stock theme is chroma 0 throughout, which
+     reads as unconsidered. Everything here carries a slight blue bias so the
+     greys belong to the same family as the indigo accent. */
+  --background: oklch(0.985 0.003 258);
+  --foreground: oklch(0.215 0.021 265);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.215 0.021 265);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.215 0.021 265);
+  --primary: oklch(0.475 0.155 268);
+  --primary-foreground: oklch(0.99 0.002 258);
+  --secondary: oklch(0.955 0.008 258);
+  --secondary-foreground: oklch(0.30 0.035 265);
+  --muted: oklch(0.962 0.006 258);
+  --muted-foreground: oklch(0.535 0.023 260);
+  --accent: oklch(0.945 0.016 265);
+  --accent-foreground: oklch(0.295 0.055 268);
+  --destructive: oklch(0.556 0.196 25);
+  --destructive-foreground: oklch(0.99 0.002 258);
+  --border: oklch(0.913 0.007 258);
+  --input: oklch(0.913 0.007 258);
+  --ring: oklch(0.545 0.14 268);
+
+  /* Semantic. Deliberately NOT the accent hue — an agent marker and a P0 badge
+     must not read as "this is the brand colour" or as each other. */
+  --agent: oklch(0.52 0.19 300);
+  --agent-soft: oklch(0.955 0.03 300);
+  --ok: oklch(0.52 0.13 158);
+  --ok-soft: oklch(0.955 0.033 158);
+  --warn: oklch(0.60 0.13 75);
+  --warn-soft: oklch(0.958 0.045 80);
+  --crit: oklch(0.545 0.185 22);
+  --crit-soft: oklch(0.958 0.033 22);
+
+  --radius: 0.55rem;
+}
+
+.dark {
+  --background: oklch(0.178 0.014 262);
+  --foreground: oklch(0.945 0.006 258);
+  --card: oklch(0.212 0.016 262);
+  --card-foreground: oklch(0.945 0.006 258);
+  --popover: oklch(0.212 0.016 262);
+  --popover-foreground: oklch(0.945 0.006 258);
+  --primary: oklch(0.72 0.145 272);
+  --primary-foreground: oklch(0.185 0.025 268);
+  --secondary: oklch(0.268 0.018 262);
+  --secondary-foreground: oklch(0.945 0.006 258);
+  --muted: oklch(0.258 0.016 262);
+  --muted-foreground: oklch(0.685 0.019 260);
+  --accent: oklch(0.288 0.026 265);
+  --accent-foreground: oklch(0.955 0.008 260);
+  --destructive: oklch(0.685 0.175 24);
+  --destructive-foreground: oklch(0.185 0.02 262);
+  --border: oklch(1 0 0 / 9.5%);
+  --input: oklch(1 0 0 / 13%);
+  --ring: oklch(0.66 0.13 270);
+
+  --agent: oklch(0.75 0.15 302);
+  --agent-soft: oklch(0.30 0.055 300);
+  --ok: oklch(0.72 0.13 160);
+  --ok-soft: oklch(0.28 0.045 160);
+  --warn: oklch(0.79 0.13 80);
+  --warn-soft: oklch(0.30 0.05 80);
+  --crit: oklch(0.70 0.16 24);
+  --crit-soft: oklch(0.30 0.055 24);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-agent: var(--agent);
+  --color-agent-soft: var(--agent-soft);
+  --color-ok: var(--ok);
+  --color-ok-soft: var(--ok-soft);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --color-crit: var(--crit);
+  --color-crit-soft: var(--crit-soft);
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+* {
+  border-color: var(--border);
+}
+html, body, #root { height: 100%; }
+body {
+  background-color: var(--background);
+  color: var(--foreground);
+  font-family: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  font-feature-settings: "cv05" 1;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Ticket keys, ids and codes line up in columns — give digits a fixed width. */
+.font-mono, code, kbd { font-variant-numeric: tabular-nums; }
+
+/* A URL or stack frame has no space to break at; without this it forces its
+   whole column wide and the pane scrolls sideways. */
+.overflow-wrap-anywhere { overflow-wrap: anywhere; }
+
+/* The scrollbars in three dense panes should not shout. */
+* { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+*::-webkit-scrollbar { width: 9px; height: 9px; }
+*::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 99px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-track { background: transparent; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}
