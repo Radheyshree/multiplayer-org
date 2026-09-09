@@ -432,9 +432,13 @@ async function runSyncMail(
     // than one pull request, and the link on each line should be the one that
     // mail is actually about.
     const note = readNotification(mail) ?? threadNote;
+    // Stamp who actually wrote it. `messages.send` posts as the signed-in user,
+    // so without this a colleague's email appears in the thread under your name
+    // and face. An outbound reply is genuinely ours, so it carries nothing.
+    const author = mail.sentByUserId ? undefined : address(mail.from);
     await spaces.messages.send({
       conversationId: link.workConversationId,
-      content: tagUpdate('xyne-desk', describeMail(mail, note), 'note', ref),
+      content: tagUpdate('xyne-desk', describeMail(mail, note), 'note', ref, author),
     });
     seen.add(ref);
     copied += 1;
@@ -993,6 +997,7 @@ export async function syncChannelMail(
         `**${mail.subject}**\nemailed to this track by ${who}${org ? ` (${org})` : ''}`,
         'note',
         ref,
+        who,
       ),
     });
     seen.add(ref);

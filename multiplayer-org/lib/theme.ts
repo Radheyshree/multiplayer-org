@@ -49,6 +49,17 @@ export const c = {
   /** An agent said this — distinct from both brand and status. */
   agent: 'var(--agent)',
 
+  /**
+   * What a message sits in.
+   *
+   * The reference puts every message in a rounded bubble rather than as text on
+   * the page, and it is not decoration: with a badge, a name, a role and a
+   * source on every row, the bubble is what tells you where one person's turn
+   * ends and the next begins. The agent's is a shade warmer than a person's.
+   */
+  bubble: 'var(--bubble)',
+  bubbleAgent: 'var(--bubble-agent)',
+
   /** Reads on top of `signal` — a filled primary control. */
   signalText: 'var(--primary-foreground)',
   /**

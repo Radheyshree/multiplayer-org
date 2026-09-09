@@ -13,12 +13,17 @@
  */
 import type { Source } from '../../lib/provenance';
 import { SurfaceIcon } from './SurfaceIcon';
+import { BrandMark, hasBrandMark } from './BrandMark';
 import { c, mono } from '../../lib/theme';
 
 export function SourceBadge({ source, title }: { source: Source; title?: string }) {
+  // The product's own logo where we have one, a generic shape where we do not.
+  // A brand mark is the thing people actually scan for; the words beside it are
+  // for the cases the mark cannot cover.
+  const brand = source.system?.id;
   const inner = (
     <>
-      <SurfaceIcon source={source} size={11} />
+      {hasBrandMark(brand) ? <BrandMark system={brand} size={13} /> : <SurfaceIcon source={source} size={11} />}
       <span>{source.label}</span>
       {source.detail ? (
         <span className="truncate" style={{ color: c.mute, maxWidth: '11rem' }}>
@@ -47,15 +52,15 @@ export function SourceBadge({ source, title }: { source: Source; title?: string 
     </span>
   ) : null;
 
+  // No pill. In the reference the source sits beside the name as ordinary text
+  // next to a logo — boxing it made every row look like a form field, and with
+  // a badge on every single line the boxes were most of what you saw.
   const style = {
-    fontFamily: mono,
-    fontSize: '9.5px',
-    letterSpacing: '0.02em',
+    fontSize: '11.5px',
     color: c.mute,
-    border: `1px solid ${c.line}`,
   } as const;
 
-  const className = 'inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-px leading-none';
+  const className = 'inline-flex shrink-0 items-center gap-1 leading-none';
 
   // A badge that links somewhere must look like it does — the underline on
   // hover is the only affordance distinguishing the two, since colouring it

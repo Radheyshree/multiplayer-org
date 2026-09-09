@@ -30,6 +30,11 @@
      must not read as "this is the brand colour" or as each other. */
   --agent: oklch(0.52 0.19 300);
   --agent-soft: oklch(0.955 0.03 300);
+  /* Message bubbles. Warm greys, following the reference: a person's bubble is
+     neutral, the agent's is a shade warmer so a thread reads as a conversation
+     with two kinds of participant rather than as one undifferentiated column. */
+  --bubble: oklch(0.945 0.005 80);
+  --bubble-agent: oklch(0.935 0.012 70);
   --ok: oklch(0.52 0.13 158);
   --ok-soft: oklch(0.955 0.033 158);
   --warn: oklch(0.60 0.13 75);
@@ -63,6 +68,8 @@
 
   --agent: oklch(0.75 0.15 302);
   --agent-soft: oklch(0.30 0.055 300);
+  --bubble: oklch(0.255 0.012 262);
+  --bubble-agent: oklch(0.272 0.020 300);
   --ok: oklch(0.72 0.13 160);
   --ok-soft: oklch(0.28 0.045 160);
   --warn: oklch(0.79 0.13 80);

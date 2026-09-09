@@ -42,7 +42,7 @@ export type EntryKind = 'activity' | 'note';
  * tickets, and they must keep their badges.
  */
 const MARKER =
-  /^(?:<!--\s*app:([a-z0-9-]{1,40})(?:\|(activity|note))?(?:\|([a-z0-9:._-]{1,80}))?\s*-->|\[app:([a-z0-9-]{1,40})(?:\|(activity|note))?(?:\|([a-z0-9:._-]{1,80}))?\])\s*/i;
+  /^(?:<!--\s*app:([a-z0-9-]{1,40})(?:\|(activity|note))?(?:\|([a-z0-9:._-]{1,80}))?(?:\|as:([^|>\s]{1,120}))?\s*-->|\[app:([a-z0-9-]{1,40})(?:\|(activity|note))?(?:\|([a-z0-9:._-]{1,80}))?\])\s*/i;
 
 /**
  * Wrap an app's entry so the ledger can attribute and layer it.
@@ -58,8 +58,23 @@ const MARKER =
  * else does — the server hardcodes `messages.metadata` to null on write — and it
  * is stripped along with the marker, so no reader ever sees it.
  */
-export function tagUpdate(appId: string, body: string, kind: EntryKind = 'note', ref?: string): string {
-  return `<!--app:${appId}|${kind}${ref ? `|${ref}` : ''}-->${body}`;
+export function tagUpdate(
+  appId: string,
+  body: string,
+  kind: EntryKind = 'note',
+  ref?: string,
+  /**
+   * Who this entry is really FROM.
+   *
+   * A mirrored email was written by whoever sent it, but the message record
+   * belongs to whoever ran the sync — `messages.send` has no way to post as
+   * somebody else. Without this the thread claims you wrote a colleague's mail.
+   * An address rather than a user id, because the sender is often not a Xyne
+   * user at all; the renderer resolves it to a real person when it can.
+   */
+  from?: string,
+): string {
+  return `<!--app:${appId}|${kind}${ref ? `|${ref}` : ''}${from ? `|as:${from}` : ''}-->${body}`;
 }
 
 export interface ParsedUpdate {
@@ -71,15 +86,18 @@ export interface ParsedUpdate {
   body: string;
   /** The outside thing this entry mirrors, when it was written with one. */
   ref?: string;
+  /** The address this entry is really from, when it is not the sender's own. */
+  from?: string;
 }
 
 export function parseUpdate(content: string): ParsedUpdate {
   const m = MARKER.exec(content);
   if (!m) return { appId: null, kind: 'note', body: content };
   // Groups 1-3 are the comment form, 4-6 the legacy bracket form.
-  const appId = m[1] ?? m[4];
-  const kind = m[2] ?? m[5];
-  const ref = m[3] ?? m[6];
+  const appId = m[1] ?? m[5];
+  const kind = m[2] ?? m[6];
+  const ref = m[3] ?? m[7];
+  const from = m[4];
   if (!appId) return { appId: null, kind: 'note', body: content };
   return {
     appId: appId.toLowerCase(),
@@ -88,6 +106,7 @@ export function parseUpdate(content: string): ParsedUpdate {
     kind: (kind?.toLowerCase() as EntryKind | undefined) ?? 'note',
     body: content.slice(m[0].length),
     ...(ref ? { ref: ref.toLowerCase() } : {}),
+    ...(from ? { from: from.toLowerCase() } : {}),
   };
 }
 

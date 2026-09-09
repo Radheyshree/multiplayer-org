@@ -133,7 +133,14 @@ export function Composer({
         </ul>
       ) : null}
 
-      <div className="flex items-center gap-2">
+      {/* The composer, as in the reference: one tall rounded field with a
+          circular send button sitting inside it, rather than a small input with
+          a rectangular button beside it. It is the only always-visible control
+          in the pane, so it is the one that should look like an invitation. */}
+      <div
+        className="flex items-center gap-2 rounded-full py-1 pr-1 pl-4"
+        style={{ background: c.card, border: `1px solid ${c.line}` }}
+      >
         <input
           ref={inputRef}
           value={text}
@@ -176,16 +183,27 @@ export function Composer({
           }}
           placeholder={placeholder}
           disabled={disabled}
-          className="h-8 min-w-0 flex-1 rounded-md px-2.5 text-[12.5px] outline-none"
-          style={{ background: c.card, border: `1px solid ${c.line}`, color: c.text }}
+          className="h-9 min-w-0 flex-1 bg-transparent text-[13.5px] outline-none"
+          style={{ color: c.text }}
         />
         <button
           onClick={() => void submit()}
           disabled={disabled || !text.trim()}
-          className="h-8 shrink-0 rounded-md px-3 text-[12px] font-medium disabled:opacity-40"
+          aria-label="Send"
+          title="Send"
+          className="grid size-8 shrink-0 place-items-center rounded-full transition-opacity disabled:opacity-30"
           style={{ background: c.signal, color: c.signalText }}
         >
-          Send
+          <svg width="15" height="15" viewBox="0 0 24 24" aria-hidden>
+            <path
+              d="M12 19V5M12 5l-6 6M12 5l6 6"
+              stroke="currentColor"
+              strokeWidth="2.2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              fill="none"
+            />
+          </svg>
         </button>
       </div>
 

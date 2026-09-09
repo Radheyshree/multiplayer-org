@@ -18,6 +18,12 @@ export type Person = {
   picture?: string;
   isBot?: boolean;
   /**
+   * Their address. Kept, not just used as a name fallback, because it is the
+   * only join between a Xyne user and an email that arrived from outside —
+   * see `personByEmail`, which is how a mirrored mail gets its real author.
+   */
+  email?: string;
+  /**
    * Job title and team, e.g. "Product Engineer - I" of "Infosec".
    *
    * These are the second line of a message row — the reference product shows
@@ -55,6 +61,25 @@ export function allPeople(): Person[] {
   return [...people.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
+/**
+ * The person behind an email address, when the workspace knows one.
+ *
+ * Built by scanning the directory rather than kept as a second index: it is
+ * called once per mirrored row, the directory is already in memory, and a stale
+ * index would be worse than a linear pass over a map we already hold.
+ *
+ * Returns null for an address belonging to nobody here — a vendor, a robot —
+ * which the caller must render as the address itself rather than as a stranger.
+ */
+export function personByEmail(email: string | undefined | null): Person | null {
+  const target = email?.trim().toLowerCase();
+  if (!target) return null;
+  for (const p of people.values()) {
+    if (p.email?.toLowerCase() === target) return p;
+  }
+  return null;
+}
+
 export function personOf(id: string): Person {
   return people.get(id) ?? { id, name: id.slice(0, 8) };
 }
@@ -81,6 +106,7 @@ export function loadDirectory(): Promise<void> {
         people.set(u.id, {
           id: u.id,
           name: u.displayName || u.name || u.email || u.id.slice(0, 8),
+          ...(u.email ? { email: u.email } : {}),
           ...(u.picture ? { picture: u.picture } : {}),
           ...(u.userType === 'BOT' ? { isBot: true } : {}),
         });
@@ -145,7 +171,13 @@ export async function resolvePeople(ids: Array<string | null | undefined>): Prom
     for (const p of profiles ?? []) {
       // `userId` FIRST — `id` is the profile row's own id and will not match.
       const id = p.userId ?? p.id;
-      if (id) people.set(id, { id, name: p.displayName || p.name || p.email || id.slice(0, 8) });
+      if (id) {
+        people.set(id, {
+          id,
+          name: p.displayName || p.name || p.email || id.slice(0, 8),
+          ...(p.email ? { email: p.email } : {}),
+        });
+      }
     }
   } catch {
     /* fall through to the id-prefix placeholder */

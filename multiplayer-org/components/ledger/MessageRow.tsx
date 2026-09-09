@@ -20,7 +20,7 @@
  */
 import type { ReactNode } from 'react';
 import { parseUpdate, type EntryKind } from '../../lib/appUpdate';
-import { initials, personOf, tintFor } from '../../lib/people';
+import { initials, personByEmail, personOf, tintFor } from '../../lib/people';
 import {
   actsOf,
   contentFormat,
@@ -72,9 +72,15 @@ export function startsGroup(
   // lines and none of the provenance this surface exists to show.
   //
   // So a row's identity is (sender, source), not sender alone.
-  const a = parseUpdate(prev.content ?? '').appId;
-  const b = parseUpdate(m.content ?? '').appId;
+  const pa = parseUpdate(prev.content ?? '');
+  const pb = parseUpdate(m.content ?? '');
+  const a = pa.appId;
+  const b = pb.appId;
   if (a !== b) return true;
+  // Mirrored mail is all sent by whoever ran the sync, so senderId is identical
+  // across a run of it. The author that matters is the address it came from —
+  // without this, five emails from five people group under the first one's face.
+  if ((pa.from ?? '') !== (pb.from ?? '')) return true;
   return sourceOf(prev, channel, a).label !== sourceOf(m, channel, b).label;
 }
 
@@ -180,7 +186,7 @@ export function MessageRow({
 
   // Our own entries carry their attribution in the body, because the server
   // drops metadata on write. Strip the marker before anything reads the text.
-  const { appId, kind, body: tagged } = parseUpdate(m.content ?? '');
+  const { appId, kind, from: taggedFrom, body: tagged } = parseUpdate(m.content ?? '');
   const { actions, body } = parseBody(tagged);
 
   // BOT covers two different things and they should not look alike: a Claw
@@ -199,12 +205,26 @@ export function MessageRow({
   // An ingested message is sent by a pseudo-bot user, so the directory resolves
   // it to the connector's name. The human is in the ingestion stamp.
   const ext = externalAuthor(m);
-  const name = ext?.name ?? (m.senderId === meId ? 'You' : person.name);
+  // A line this app mirrored carries the address it is really from — the record
+  // belongs to whoever ran the sync, but the words belong to whoever sent the
+  // mail. Resolve that address to a real colleague where the workspace knows
+  // one, so their name, face and colour are the ones on the row; otherwise show
+  // the address, because a vendor is a real correspondent too.
+  const mirroredFrom = taggedFrom ?? null;
+  const mirroredPerson = mirroredFrom ? personByEmail(mirroredFrom) : null;
+  const attributedId = mirroredPerson?.id ?? mirroredFrom ?? m.senderId;
+  const name = mirroredPerson
+    ? mirroredPerson.name
+    : (mirroredFrom ?? ext?.name ?? (m.senderId === meId ? 'You' : person.name));
   // Team before title: the reference reads "Priya · Marketing", and which team
   // someone is on is what tells you why they are on this ticket. The job title
   // is the more precise fact and the less useful one, so it becomes the
   // tooltip rather than competing for the same 13rem.
-  const subtitle = ext ? ext.email : person.team || person.title || '';
+  const subtitle = mirroredFrom
+    ? (mirroredPerson ? mirroredPerson.team || mirroredPerson.title || '' : 'not in this workspace')
+    : ext
+      ? ext.email
+      : person.team || person.title || '';
   const subtitleTitle = ext ? undefined : [person.title, person.team].filter(Boolean).join(' · ');
 
   const grouped = !startsGroup(m, previous, channel);
@@ -228,16 +248,20 @@ export function MessageRow({
         ) : isAgent ? (
           <AgentMark />
         ) : (
-          <Avatar id={m.senderId} name={name} />
+          <Avatar id={attributedId} name={name} />
         )}
       </div>
 
       <div className="min-w-0 flex-1">
         {!grouped && (
-          <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+            {/* The name carries the person's own colour, as in the reference.
+                It is the same deterministic tint their avatar already uses, so
+                the two agree and a regular correspondent becomes recognisable
+                before you have read the word. */}
             <span
               className="text-[13.5px] font-semibold"
-              style={{ color: isAgent ? c.agent : c.text }}
+              style={{ color: isAgent ? c.agent : tintFor(attributedId) }}
             >
               {name}
             </span>
@@ -279,12 +303,35 @@ export function MessageRow({
           </div>
         )}
 
-        <div
-          className="break-words leading-relaxed"
-          style={{ fontSize: routine ? '12px' : '13px', color: routine ? c.graphite : c.text }}
-        >
-          <RichText html={body} format={contentFormat(m)} />
-        </div>
+        {/* The bubble.
+            Routine machinery — a stage move, a participant joining — stays as
+            plain dim text: bubbling it would give an audit line the same weight
+            as something a person wrote, and the whole point of the layering is
+            that it does not have that weight. */}
+        {routine ? (
+          <div
+            className="break-words leading-relaxed"
+            style={{ fontSize: '12px', color: c.graphite }}
+          >
+            <RichText html={body} format={contentFormat(m)} />
+          </div>
+        ) : (
+          <div
+            className="mt-1 inline-block max-w-[46rem] break-words rounded-2xl px-3.5 py-2 leading-relaxed"
+            style={{
+              fontSize: '13.5px',
+              color: c.text,
+              // A shade warmer for the agent, so two kinds of participant read
+              // as two kinds of participant without a second colour anywhere.
+              background: isAgent ? c.bubbleAgent : c.bubble,
+              // Square off the corner nearest the avatar; the tail is what makes
+              // a bubble point at its author rather than float.
+              borderTopLeftRadius: grouped ? undefined : '0.35rem',
+            }}
+          >
+            <RichText html={body} format={contentFormat(m)} />
+          </div>
+        )}
 
         {actions.length ? (
           <div className="mt-1.5 flex flex-wrap gap-1.5">
