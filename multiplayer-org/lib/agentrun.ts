@@ -202,7 +202,18 @@ export async function readRun(sessionId: string): Promise<AgentRun> {
  * Backs off from 1s to 5s. A short first interval matters because the first
  * tool label appears within about a second and is what makes the surface feel
  * alive; a long ceiling matters because agent runs routinely last minutes.
+ *
+ * A RUN THAT NEVER EXISTED. Measured over eleven dispatches: one returned HTTP
+ * 500 on a body that worked on retry, and TWO returned 200 with a sessionId
+ * that `getRun` then 404s on forever — still 404 ten minutes later. The original
+ * loop treated every failed poll alike and sat there for the full five-minute
+ * timeout on a run that was never going to exist, which reads to the user as a
+ * hung agent rather than as a failed dispatch. So a poll that has never once
+ * succeeded gives up after GIVE_UP_MS and says so; a poll that fails after the
+ * run has been seen keeps retrying, because that is a network blip and the
+ * agent is still working.
  */
+const GIVE_UP_MS = 30_000;
 export async function watchRun(
   sessionId: string,
   onUpdate: (run: AgentRun) => void,
@@ -212,16 +223,26 @@ export async function watchRun(
   const started = Date.now();
   let delay = 1000;
   let last: AgentRun = { sessionId, status: 'running' };
+  let everRead = false;
 
   for (;;) {
     if (signal?.aborted) return last;
     try {
       last = await readRun(sessionId);
+      everRead = true;
       onUpdate(last);
       if (isTerminal(last.status)) return last;
     } catch {
       // A failed poll is not a failed run — the agent keeps working. Keep the
-      // last good state on screen and try again.
+      // last good state on screen and try again. Unless we have never managed
+      // to read it at all, in which case the dispatch itself did not take.
+      if (!everRead && Date.now() - started > GIVE_UP_MS) {
+        return {
+          ...last,
+          status: 'failed',
+          error: 'The agent did not start. Nothing was run — try again.',
+        };
+      }
     }
     if (Date.now() - started > timeoutMs) {
       return { ...last, status: 'failed', error: 'Timed out waiting for the agent.' };

@@ -7,10 +7,11 @@
  * never updated the status." Those are invisible by definition. This is where
  * they become visible.
  *
- * On the workspace it was built against that is 34 findings over 76 open
- * tickets: 14 merged pull requests whose ticket never moved, 16 declined ones,
- * two ETAs that passed, two tickets that have said nothing in a fortnight. All
- * of it read in about three seconds.
+ * On the workspace it was built against that is 33 findings over 76 open
+ * tickets: eleven that shipped with a release and never closed, eleven whose
+ * pull request merged and whose ticket never moved, eight declined with nothing
+ * replacing them, one review open since July, one passed ETA and one that has
+ * said nothing in a fortnight. All of it read in about nine seconds.
  *
  * THREE THINGS THIS DOES NOT DO, each on purpose.
  *
@@ -25,7 +26,9 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  alreadyAsked,
   applySuggestion,
+  askRef,
   askText,
   dismiss,
   scan,
@@ -40,11 +43,25 @@ import { initials, personOf, tintFor } from '../lib/people';
 import { c, eyebrow, mono } from '../lib/theme';
 import { BrandMark } from './ledger/BrandMark';
 import type { WorkItem } from '../lib/workitem';
+import { xyne } from '../lib/xyne';
+
+/** One thread, read at click time so "already asked" is checked against truth. */
+async function threadOf(conversationId: string): Promise<Array<{ content?: string }>> {
+  try {
+    const { spaces } = await xyne();
+    const page = await spaces.messages.listByConversation(conversationId, { limit: 100 });
+    return (page as unknown as { items?: Array<{ content?: string }> }).items ?? [];
+  } catch {
+    return [];
+  }
+}
 
 /** Section headings, in the order the rules themselves are ranked. */
 const SECTION: Record<NudgeRule, string> = {
   unanswered: 'Waiting on you',
+  shipped: 'Shipped, and still open',
   'pr-merged': 'The code landed, the ticket did not move',
+  'pr-open': 'Still waiting on a review',
   'pr-declined': 'The code did not land',
   'eta-passed': 'The date has passed',
   'gone-quiet': 'Gone quiet',
@@ -53,7 +70,9 @@ const SECTION: Record<NudgeRule, string> = {
 
 const RULE_ORDER: NudgeRule[] = [
   'unanswered',
+  'shipped',
   'pr-merged',
+  'pr-open',
   'pr-declined',
   'eta-passed',
   'gone-quiet',
@@ -74,7 +93,13 @@ export function UpdateQueue({
   tickets: TicketRow[];
   meId?: string;
   onOpen: (t: WorkItem) => void;
-  onPost: (ticket: { conversationId: string }, appId: string, text: string, kind: 'activity' | 'note') => Promise<void>;
+  onPost: (
+    ticket: { conversationId: string },
+    appId: string,
+    text: string,
+    kind: 'activity' | 'note',
+    ref?: string,
+  ) => Promise<void>;
 }) {
   const [nudges, setNudges] = useState<Nudge[]>([]);
   const [coverage, setCoverage] = useState<{ examined: number; total: number } | null>(null);
@@ -161,12 +186,22 @@ export function UpdateQueue({
       setBusy(n.key);
       setError(null);
       try {
+        // The digest does not hold the thread, so it reads it once here rather
+        // than trusting its own memory — a colleague may have asked this same
+        // question from their own tab five minutes ago.
+        const thread = await threadOf(n.conversationId);
+        if (alreadyAsked(thread, n.key)) {
+          setError(`${n.xyneId} has already been asked about this.`);
+          setNudges(prev => prev.filter(x => x.key !== n.key));
+          return;
+        }
         const person = personOf(n.ownerId);
         await onPost(
           { conversationId: n.conversationId },
           'update-agent',
           `${mentionHtml({ userId: person.id, name: person.name })} ${askText(n)}`,
           'note',
+          askRef(n.key),
         );
         setNudges(prev => prev.filter(x => x.key !== n.key));
       } catch (e) {

@@ -58,6 +58,8 @@ import { MailBridge } from './MailBridge';
 import { UpdateAgent } from './UpdateAgent';
 import {
   applySuggestion,
+  alreadyAsked,
+  askRef,
   askText,
   detect,
   dismiss,
@@ -146,7 +148,13 @@ export function Ledger({
    * lying about where they came from. The shell still owns the target; only the
    * attribution is named here.
    */
-  onRecordFrom?: (appId: string, text: string, kind: 'activity' | 'note') => Promise<void>;
+  onRecordFrom?: (
+    appId: string,
+    text: string,
+    kind: 'activity' | 'note',
+    /** Idempotency key, so the same ask is never put to somebody twice. */
+    ref?: string,
+  ) => Promise<void>;
   onRefresh: () => void | Promise<void>;
 }) {
   const [tab, setTab] = useState<'thread' | 'related'>('thread');
@@ -485,6 +493,13 @@ export function Ledger({
         const facts = await factsFor(ticketRow.current, messages as unknown as ThreadMessage[]);
         if (!live) return;
         const found = facts ? detect(facts) : null;
+        // Already put to them in this thread? Then it is their turn, not ours.
+        // Read off the thread rather than out of storage, so a second device or
+        // a colleague's tab reaches the same conclusion. See `askRef`.
+        if (found && alreadyAsked(messages, found.key)) {
+          setNudge(null);
+          return;
+        }
         // A finding somebody has already waved away must not come back on the
         // next poll. Checked here rather than inside `detect` so the rules stay
         // pure and testable without storage.
@@ -581,7 +596,7 @@ export function Ledger({
     try {
       const person = personOf(nudge.ownerId);
       const mention = mentionHtml({ userId: person.id, name: person.name });
-      await onRecordFrom?.('update-agent', `${mention} ${askText(nudge)}`, 'note');
+      await onRecordFrom?.('update-agent', `${mention} ${askText(nudge)}`, 'note', askRef(nudge.key));
       await onRefresh();
       setNudgeNote(`Asked ${person.name} on the ticket.`);
       setNudge(null);

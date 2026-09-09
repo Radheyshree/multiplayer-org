@@ -836,8 +836,8 @@ npm run dev`}
                     setFocused(w);
                     setView('projects');
                   }}
-                  onPost={async (t, appId, text, kind) => {
-                    await postToTicket(t, tagUpdate(appId, text, kind));
+                  onPost={async (t, appId, text, kind, ref) => {
+                    await postToTicket(t, tagUpdate(appId, text, kind, ref));
                     // Only refresh if it happens to be the thread on screen —
                     // acting on eight tickets from here should cost eight writes,
                     // not eight thread reloads.
@@ -1040,9 +1040,9 @@ npm run dev`}
           onRecord={async (text, kind) => {
             if (tabTicket) await postFromApp(tabTicket, text, kind);
           }}
-          onRecordFrom={async (appId, text, kind) => {
+          onRecordFrom={async (appId, text, kind, ref) => {
             if (!tabTicket) return;
-            await postToTicket(tabTicket, tagUpdate(appId, text, kind));
+            await postToTicket(tabTicket, tagUpdate(appId, text, kind, ref));
             await refreshThread();
           }}
           onRefresh={refreshThread}

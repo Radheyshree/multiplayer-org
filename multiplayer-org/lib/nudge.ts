@@ -20,18 +20,22 @@
  *
  * GROUNDED IN THE REAL WORKSPACE. Every rule below was measured against the
  * signed-in user's own 81 tickets before it was written, and any rule the data
- * did not support was dropped rather than kept "just in case". What fires today:
+ * did not support was dropped rather than kept "just in case". What fires today,
+ * 33 findings over 76 open tickets:
  *
- *     pr-merged     14 tickets   PR merged, ticket still open, merge > 3 days old
- *     pr-declined   16 tickets   PR declined, ticket still open
- *     eta-passed    12 tickets   the ETA is in the past
- *     gone-quiet     2 tickets   Started, silent 14+ days, no PR verdict either way
+ *     shipped       11 tickets   a release carrying it went out; still open
+ *     pr-merged     11 tickets   merged, nothing left in review, ticket never moved
+ *     pr-open        1 ticket    raised 14+ days ago and never settled
+ *     pr-declined    8 tickets   declined, and nothing on this ticket ever merged
+ *     eta-passed     1 ticket    the ETA is in the past
+ *     gone-quiet     1 ticket    Started, silent 14+ days, no code either way
  *     unanswered     0 tickets   somebody asked something and nobody answered
  *
  * `unanswered` is kept at zero yield on purpose: it is the case the feature was
  * asked for first ("it needs someone's input"), it costs nothing because the
  * ledger already holds the messages, and a rule that has not fired yet is not the
- * same as a rule that cannot.
+ * same as a rule that cannot. It is not advertised anywhere in the UI either —
+ * only three messages in 514 carry a QUESTION act, and all three were answered.
  *
  * THE TRAP THAT SHAPED THE SUGGESTIONS. Every one of those 14 merged-PR tickets
  * is ALREADY sitting at a stage called MERGED or Merged — the PR bot moved the
@@ -48,6 +52,8 @@
  * is the difference between a suggestion and a guess.
  */
 import { storage, storageReady } from './xyne';
+import { parseUpdate } from './appUpdate';
+import { personOf } from './people';
 import { actsOf, type MessageLike } from './provenance';
 import {
   getDetails,
@@ -85,7 +91,9 @@ const DAY = 86_400_000;
 
 export type NudgeRule =
   | 'unanswered'
+  | 'shipped'
   | 'pr-merged'
+  | 'pr-open'
   | 'pr-declined'
   | 'eta-passed'
   | 'gone-quiet'
@@ -98,7 +106,9 @@ export type NudgeRule =
  */
 const ORDER: NudgeRule[] = [
   'unanswered',
+  'shipped',
   'pr-merged',
+  'pr-open',
   'pr-declined',
   'eta-passed',
   'gone-quiet',
@@ -141,7 +151,7 @@ export interface Suggestion {
 }
 
 /** How the person who owes the update was picked. Shown, because "why me?". */
-export type OwnerReason = 'assignee' | 'creator' | 'last-speaker' | 'nobody';
+export type OwnerReason = 'assignee' | 'merged-it' | 'creator' | 'last-speaker' | 'nobody';
 
 export interface Nudge {
   ticketId: string;
@@ -192,8 +202,17 @@ export interface TicketFacts {
   stages: string[];
   /** Whether the board enforces transition rules — decides which write path. */
   nonLinear: boolean;
-  /** The newest PR event on the ticket, from its activity log. */
-  pr?: { action: string; number?: number; url?: string; repo?: string; at: number } | null;
+  /** Every pull request this ticket has, reduced to what a rule needs. */
+  prs: PRHistory;
+  /**
+   * When this ticket went out with a release, if it did.
+   *
+   * From a message the platform writes into the thread
+   * (`metadata.messageSubtype === 'ticket_deployed_with_release'`), so it needs
+   * the thread — see `factsFor`. It is the strongest evidence there is that a
+   * ticket is finished, and eleven open tickets here carry one.
+   */
+  deployedAt?: number | null;
   /** When anything last landed in the thread, from any surface. */
   lastMessageAt?: number | null;
   /**
@@ -244,6 +263,43 @@ export function nextStage(f: TicketFacts): string | null {
   if (/reject|declin|duplicate|cancel|abandon/i.test(next)) return null;
   return next;
 }
+
+/**
+ * Where a card should go once its pull request has landed.
+ *
+ * Usually the next stage. But a card can sit several columns behind its code:
+ * XYNE-12510's PR merged five months ago while the card is still at PR Review,
+ * and on that board the next stage is QA Testing — so "the PR merged, is this
+ * QA Testing now?" asks somebody to move a card forward into a step the code
+ * has already been through.
+ *
+ * So if the board has a column literally called Merged and the card is before
+ * it, that is the target. Matching a stage name by hand is the thing this file
+ * otherwise refuses to do — but the risk runs the right way here: it is the
+ * TARGET, not the trigger, an exact case-folded match, and a board that spells
+ * it anything else simply falls back to the next stage rather than losing the
+ * finding.
+ */
+function stageAfterMerge(f: TicketFacts): string | null {
+  const here = f.stages.findIndex(x => x.toLowerCase() === f.stageName.toLowerCase());
+  const merged = f.stages.findIndex(x => x.toLowerCase() === 'merged');
+  if (here !== -1 && merged !== -1 && here < merged) return f.stages[merged];
+  return nextStage(f);
+}
+
+/** The move to the next sensible stage, when this ticket's board has one. */
+const stageStep = (f: TicketFacts, why: string): Suggestion[] => {
+  const next = stageAfterMerge(f);
+  if (!next) return [];
+  return [
+    {
+      kind: 'stage',
+      label: `Move to ${next}`,
+      stageName: next,
+      records: `Moved to ${next} — ${why}.`,
+    },
+  ];
+};
 
 const closeSuggestion = (f: TicketFacts, why: string): Suggestion => ({
   kind: 'status',
@@ -301,14 +357,40 @@ export function detect(f: TicketFacts, now: number = Date.now()): Nudge | null {
   return null;
 }
 
-/** Who owes the update, and how we decided. */
+/**
+ * Who owes the update, and how we decided.
+ *
+ * Four fallbacks, because no single field is populated often enough to stand
+ * alone: only 21 of 81 tickets here have an assignee, and an assignee-only rule
+ * would have nobody to ask about three quarters of the work.
+ *
+ * NEVER A BOT. The person who merged a pull request is usually the right one to
+ * ask whether it can be closed — but on four of the merges here that person is
+ * "Bitbucket Bot", and an update agent asking a robot for an update is the sort
+ * of thing that gets the whole feature deleted. Bots are skipped at every step,
+ * not just this one.
+ *
+ * NEVER `value.authorName` either. It is a display string, and the same human
+ * appears in it as "Pradeesh S", "Pradeesh333" and "xyne.spaces@juspay.in".
+ * `activity.updatedBy` is a real user id.
+ */
 export function ownerOf(f: TicketFacts): { id: string | null; reason: OwnerReason } {
-  if (f.assignedTo) return { id: f.assignedTo, reason: 'assignee' };
-  // The creator, next. In this workspace 60 of 81 tickets are unassigned, so an
-  // assignee-only rule would have nobody to ask on three quarters of the work —
-  // and the person who opened a ticket is the person who knows whether it is done.
-  if (f.createdBy) return { id: f.createdBy, reason: 'creator' };
-  if (f.lastHuman) return { id: f.lastHuman.senderId, reason: 'last-speaker' };
+  const human = (id: string | null | undefined): string | null =>
+    id && !personOf(id).isBot ? id : null;
+
+  const assignee = human(f.assignedTo);
+  if (assignee) return { id: assignee, reason: 'assignee' };
+
+  // Whoever settled the code. Closest to knowing whether it is actually done.
+  const actor = human(f.prs.merged?.by) ?? human(f.prs.declined?.by) ?? human(f.prs.open[0]?.by);
+  if (actor) return { id: actor, reason: 'merged-it' };
+
+  const creator = human(f.createdBy);
+  if (creator) return { id: creator, reason: 'creator' };
+
+  const spoke = human(f.lastHuman?.senderId);
+  if (spoke) return { id: spoke, reason: 'last-speaker' };
+
   return { id: null, reason: 'nobody' };
 }
 
@@ -352,33 +434,30 @@ const rules: Record<NudgeRule, Rule> = {
   },
 
   /**
-   * The PR landed and the ticket never moved. The case this feature exists for.
+   * It went out with a release.
+   *
+   * The strongest evidence a ticket is finished, and it is not ours: the
+   * platform writes a `ticket_deployed_with_release` message into the thread
+   * when a release carrying this ticket ships. Eleven open tickets here have
+   * one, the oldest 96 days ago.
+   *
+   * Because of it, closing is the PRIMARY suggestion rather than the second
+   * one — everywhere else this file refuses to assume that merged means done,
+   * and here the platform has said it does.
    */
-  'pr-merged': (f, now) => {
-    if (f.pr?.action !== 'merged') return null;
-    const age = days(f.pr.at, now);
+  shipped: (f, now) => {
+    const at = f.deployedAt;
+    if (!at) return null;
+    const age = days(at, now);
     if (age < PR_GRACE_DAYS) return null;
-    const next = nextStage(f);
-    const pr = f.pr.number ? `PR #${f.pr.number}` : 'The pull request';
     return {
-      stamp: f.pr.at,
+      stamp: at,
       nudge: {
-        ask: next
-          ? `${pr} merged ${sinceWords(now - f.pr.at)}. Is this ${next} now, or done?`
-          : `${pr} merged ${sinceWords(now - f.pr.at)} and this is still open. Close it?`,
-        because: `${pr}${f.pr.repo ? ` in ${f.pr.repo}` : ''} merged ${sinceWords(now - f.pr.at)}; the ticket is still ${humanStatus(f.statusV2)} at ${f.stageName}.`,
+        ask: `This went out with a release ${sinceWords(now - at)} and is still open. Close it?`,
+        because: `A release carrying this ticket shipped ${sinceWords(now - at)}; it is still ${humanStatus(f.statusV2)} at ${f.stageName}.`,
         suggestions: [
-          ...(next
-            ? [
-                {
-                  kind: 'stage' as const,
-                  label: `Move to ${next}`,
-                  stageName: next,
-                  records: `Moved to ${next} — ${pr} merged ${sinceWords(now - f.pr.at)}.`,
-                },
-              ]
-            : []),
-          closeSuggestion(f, `${pr} merged ${sinceWords(now - f.pr.at)}.`),
+          closeSuggestion(f, `it shipped with a release ${sinceWords(now - at)}.`),
+          ...stageStep(f, `it shipped ${sinceWords(now - at)}`),
           updateSuggestion(),
         ],
         ageDays: age,
@@ -387,23 +466,83 @@ const rules: Record<NudgeRule, Rule> = {
   },
 
   /**
-   * The PR was turned down and the ticket carried on as if it had not been.
+   * The PR landed and the ticket never moved. The case this feature exists for.
+   *
+   * Guarded by `open.length === 0`: a ticket can have one pull request merged
+   * and another still in review, and asking whether to close that is asking
+   * somebody to close work they are in the middle of.
+   */
+  'pr-merged': (f, now) => {
+    const m = f.prs.merged;
+    if (!m || f.prs.open.length > 0) return null;
+    const age = days(m.at, now);
+    if (age < PR_GRACE_DAYS) return null;
+    const next = stageAfterMerge(f);
+    const pr = m.number ? `PR #${m.number}` : 'The pull request';
+    return {
+      stamp: m.at,
+      nudge: {
+        ask: next
+          ? `${pr} merged ${sinceWords(now - m.at)}. Is this ${next} now, or done?`
+          : `${pr} merged ${sinceWords(now - m.at)} and this is still open. Close it?`,
+        because: `${pr}${m.repo ? ` in ${m.repo}` : ''} merged ${sinceWords(now - m.at)}; the ticket is still ${humanStatus(f.statusV2)} at ${f.stageName}.`,
+        suggestions: [
+          ...stageStep(f, `${pr} merged ${sinceWords(now - m.at)}`),
+          closeSuggestion(f, `${pr} merged ${sinceWords(now - m.at)}.`),
+          updateSuggestion(),
+        ],
+        ageDays: age,
+      },
+    };
+  },
+
+  /**
+   * A pull request has been open a long time and nothing has settled it.
+   *
+   * The only rule here about work that is still live rather than finished, so it
+   * offers NO status change at all — the answer is a person saying where the
+   * review has got to, not a ticket field.
+   */
+  'pr-open': (f, now) => {
+    const oldest = f.prs.open[0];
+    if (!oldest) return null;
+    const age = days(oldest.at, now);
+    if (age < QUIET_DAYS) return null;
+    const pr = oldest.number ? `PR #${oldest.number}` : 'A pull request';
+    return {
+      stamp: oldest.at,
+      nudge: {
+        ask: `${pr} has been open since ${sinceWords(now - oldest.at)}. Where has the review got to?`,
+        because: `${pr}${oldest.repo ? ` in ${oldest.repo}` : ''} was raised ${sinceWords(now - oldest.at)} and has not been merged or declined.`,
+        suggestions: [updateSuggestion(), askSuggestion()],
+        ageDays: age,
+      },
+    };
+  },
+
+  /**
+   * The PR was turned down and nothing replaced it.
+   *
+   * Requires that NO pull request on this ticket ever merged. Eight tickets here
+   * merged one attempt and declined a later one months afterwards; treating
+   * those as abandoned would ask whether shipped code is still happening.
    *
    * Deliberately does NOT suggest cancelling first. A declined PR often means a
    * second attempt is coming, and a robot proposing you cancel your own work as
    * its opening move is the kind of thing that gets a feature switched off. It
-   * asks; the destructive option is second.
+   * asks; the destructive option is second and marked as such.
    */
   'pr-declined': (f, now) => {
-    if (f.pr?.action !== 'declined') return null;
-    const age = days(f.pr.at, now);
+    const d = f.prs.declined;
+    if (!d || f.prs.merged || f.prs.open.length > 0) return null;
+    const age = days(d.at, now);
     if (age < PR_GRACE_DAYS) return null;
-    const pr = f.pr.number ? `PR #${f.pr.number}` : 'The pull request';
+    const pr = d.number ? `PR #${d.number}` : 'The pull request';
     return {
-      stamp: f.pr.at,
+      stamp: d.at,
       nudge: {
-        ask: `${pr} was declined ${sinceWords(now - f.pr.at)}. Is this still happening?`,
-        because: `${pr}${f.pr.repo ? ` in ${f.pr.repo}` : ''} was declined ${sinceWords(now - f.pr.at)} and the ticket is still ${humanStatus(f.statusV2)}.`,
+        ask: `${pr} was declined ${sinceWords(now - d.at)} and nothing replaced it. Is this still happening?`,
+        because: `${pr}${d.repo ? ` in ${d.repo}` : ''} was declined ${sinceWords(now - d.at)}, no pull request on this ticket ever merged, and it is still ${humanStatus(f.statusV2)}.`,
         suggestions: [
           updateSuggestion(),
           {
@@ -411,7 +550,7 @@ const rules: Record<NudgeRule, Rule> = {
             label: 'Drop it',
             statusV2: 'CANCELLED',
             destructive: true,
-            records: `Cancelled — ${pr} was declined ${sinceWords(now - f.pr.at)}.`,
+            records: `Cancelled — ${pr} was declined ${sinceWords(now - d.at)} and nothing replaced it.`,
           },
           askSuggestion(),
         ],
@@ -560,29 +699,98 @@ async function boardShape(boardId?: string | null): Promise<{ stages: string[]; 
   }
 }
 
+/** One pull-request event, as the activity log records it. */
+export interface PREvent {
+  action: string;
+  at: number;
+  number?: number;
+  url?: string;
+  repo?: string;
+  /** The Xyne user who did it — a real id, unlike `value.authorName`. */
+  by?: string;
+}
+
 /**
- * The newest PR event on a ticket.
+ * Every pull request on a ticket, reduced to the three things a rule needs.
  *
- * Read off the activity log rather than off the thread, because the activity row
- * is the structured one: `{ prId, prUrl, action, repoName, ... }` with `action`
- * in a closed lowercase vocabulary — measured live as merged, declined, raised,
- * updated, deleted. The thread carries the same events as prose.
+ * THIS REPLACED A REAL BUG, and it is worth saying what it was. The first
+ * version read only the NEWEST PR activity and keyed off its action. That is
+ * wrong twice over on live data:
+ *
+ *   - `updated` is 80 of the 235 PR activities here and is a STAGE MOVE, not a
+ *     code event. It sits on top of the merge and hides it — which is why the
+ *     first version found 15 merged-and-open tickets where there are 23.
+ *   - Eight tickets have a merge FOLLOWED by a decline, months apart, because a
+ *     second attempt was opened and dropped after the first one shipped. Newest
+ *     -event logic asks "the PR was declined — is this still happening?" about
+ *     a ticket whose code went out in June. Confidently wrong is worse than
+ *     quiet.
+ *
+ * So: scan them all, keep the newest of each kind, and track which pull requests
+ * are still open by set-difference — `raised` minus everything terminal. That
+ * last one reproduces the server's own `remainingOpenPRs` counter exactly (both
+ * agree on the four tickets that have live code review), and it is what stops
+ * "close this?" being asked about work somebody is still reviewing.
  */
-export function newestPR(activities: Activity[]): TicketFacts['pr'] {
-  const prs = activities
-    .filter(a => (a.activityType ?? '').toUpperCase() === 'PR')
-    .filter(a => a.value && typeof a.value === 'object')
-    .sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0));
-  const top = prs[0];
-  if (!top) return null;
-  const v = top.value as Record<string, unknown>;
-  const num = typeof v.prId === 'number' ? v.prId : Number(v.prId);
+export interface PRHistory {
+  /** Newest merge, if this ticket ever had one. */
+  merged: PREvent | null;
+  /** Newest decline. */
+  declined: PREvent | null;
+  /** Newest event of any kind, for evidence. */
+  newest: PREvent | null;
+  /** Pull requests raised and never merged, declined or deleted. */
+  open: PREvent[];
+}
+
+export const NO_PRS: PRHistory = { merged: null, declined: null, newest: null, open: [] };
+
+/** Terminal verdicts. Anything else leaves a pull request open. */
+const SETTLED = new Set(['merged', 'declined', 'deleted']);
+
+export function prHistory(activities: Activity[]): PRHistory {
+  const events: PREvent[] = [];
+  for (const a of activities) {
+    if ((a.activityType ?? '').toUpperCase() !== 'PR') continue;
+    if (!a.value || typeof a.value !== 'object') continue;
+    const v = a.value as Record<string, unknown>;
+    const num = Number(v.prId);
+    events.push({
+      // Lowercase deliberately. `value.action` is already lowercase in every one
+      // of the 235 live rows (raised · updated · merged · declined · deleted),
+      // but the SAME event arrives UPPERCASE on a message as `metadata.prEvent`
+      // with a different verb for opening (CREATED, not raised). Two vocabularies
+      // for one fact; this module speaks the activity one, and folds case so a
+      // deployment that differs cannot silently match nothing.
+      action: String(v.action ?? '').toLowerCase(),
+      at: a.timestamp ?? 0,
+      ...(Number.isFinite(num) ? { number: num } : {}),
+      ...(typeof v.prUrl === 'string' ? { url: v.prUrl } : {}),
+      ...(typeof v.repoName === 'string' ? { repo: v.repoName } : {}),
+      ...(a.updatedBy ? { by: a.updatedBy } : {}),
+    });
+  }
+  events.sort((a, b) => b.at - a.at);
+
+  const newestWhere = (test: (e: PREvent) => boolean): PREvent | null =>
+    events.find(test) ?? null;
+
+  const settled = new Set(
+    events.filter(e => SETTLED.has(e.action)).map(e => String(e.number)),
+  );
+  const openById = new Map<string, PREvent>();
+  for (const e of events) {
+    if (e.action !== 'raised') continue;
+    const id = String(e.number);
+    if (settled.has(id) || openById.has(id)) continue;
+    openById.set(id, e);
+  }
+
   return {
-    action: String(v.action ?? '').toLowerCase(),
-    at: top.timestamp ?? 0,
-    ...(Number.isFinite(num) ? { number: num } : {}),
-    ...(typeof v.prUrl === 'string' ? { url: v.prUrl } : {}),
-    ...(typeof v.repoName === 'string' ? { repo: v.repoName } : {}),
+    merged: newestWhere(e => e.action === 'merged'),
+    declined: newestWhere(e => e.action === 'declined'),
+    newest: events[0] ?? null,
+    open: [...openById.values()].sort((a, b) => a.at - b.at),
   };
 }
 
@@ -601,7 +809,9 @@ export interface ThreadMessage extends MessageLike {
  * webhook announcing a build are both real activity, but neither is somebody
  * you can ask, and neither answers a question.
  */
-export function readThread(messages: ThreadMessage[]): Pick<TicketFacts, 'lastMessageAt' | 'lastHuman' | 'openQuestion'> {
+export function readThread(
+  messages: ThreadMessage[],
+): Pick<TicketFacts, 'lastMessageAt' | 'lastHuman' | 'openQuestion' | 'deployedAt'> {
   const sorted = [...messages].sort((a, b) => a.createdAt - b.createdAt);
   const last = sorted[sorted.length - 1];
   const humans = sorted.filter(m => m.msgType === 'USER');
@@ -629,10 +839,20 @@ export function readThread(messages: ThreadMessage[]): Pick<TicketFacts, 'lastMe
     break;
   }
 
+  // The platform's own "this shipped" stamp. Newest wins: a ticket can go out
+  // in more than one release, and the question is whether it has gone out at
+  // all, not when it first did.
+  let deployedAt: number | null = null;
+  for (const m of sorted) {
+    const md = m.metadata && typeof m.metadata === 'object' ? (m.metadata as Record<string, unknown>) : {};
+    if (md.messageSubtype === 'ticket_deployed_with_release') deployedAt = m.createdAt;
+  }
+
   return {
     lastMessageAt: last?.createdAt ?? null,
     lastHuman: lastHumanMsg ? { at: lastHumanMsg.createdAt, senderId: lastHumanMsg.senderId } : null,
     openQuestion,
+    deployedAt,
   };
 }
 
@@ -692,7 +912,7 @@ export async function factsFor(
     updatedAt: t.updatedAt ?? null,
     stages: board.stages,
     nonLinear: board.nonLinear,
-    pr: newestPR(activities),
+    prs: prHistory(activities),
     ...readThread(messages ?? []),
   };
 }
@@ -819,9 +1039,9 @@ export const SNOOZE_MS = 3 * DAY;
  */
 export async function scan(
   tickets: TicketRow[],
-  options: { limit?: number; concurrency?: number; now?: number; signal?: AbortSignal } = {},
-): Promise<{ nudges: Nudge[]; examined: number; total: number }> {
-  const { limit = 80, concurrency = 6, now = Date.now(), signal } = options;
+  options: { limit?: number; concurrency?: number; deepen?: number; now?: number; signal?: AbortSignal } = {},
+): Promise<{ nudges: Nudge[]; examined: number; total: number; deepened: number }> {
+  const { limit = 80, concurrency = 6, deepen = 40, now = Date.now(), signal } = options;
   const open = tickets.filter(t => !CLOSED.includes((t.statusV2 ?? '') as StatusV2));
   // Oldest first, so a scan that hits the limit spends its budget where staleness
   // actually lives. The list arrives newest-first, and taking the head of that
@@ -830,36 +1050,71 @@ export async function scan(
   const queue = [...open]
     .sort((a, b) => (a.updatedAt ?? a.eta ?? 0) - (b.updatedAt ?? b.eta ?? 0))
     .slice(0, limit);
-  const found: Nudge[] = [];
-  let examined = 0;
 
-  let cursor = 0;
-  const worker = async (): Promise<void> => {
-    for (;;) {
-      if (signal?.aborted) return;
-      const i = cursor++;
-      const t = queue[i];
-      if (!t) return;
-      try {
-        const facts = await factsFor(await enrich(t));
-        examined++;
-        if (!facts) continue;
-        const n = detect(facts, now);
-        if (!n) continue;
-        const state = await readNudgeState(n.ticketId);
-        if (!isDismissed(state, n)) found.push(n);
-      } catch {
-        // One unreadable ticket must not empty the digest.
-        examined++;
+  const work = async <T,>(items: T[], each: (item: T) => Promise<void>): Promise<void> => {
+    let cursor = 0;
+    const worker = async (): Promise<void> => {
+      for (;;) {
+        if (signal?.aborted) return;
+        const item = items[cursor++];
+        if (item === undefined) return;
+        await each(item).catch(() => {});
       }
-    }
+    };
+    await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker));
   };
-  await Promise.all(Array.from({ length: Math.min(concurrency, queue.length) }, worker));
 
-  found.sort(
-    (a, b) => ORDER.indexOf(a.rule) - ORDER.indexOf(b.rule) || b.ageDays - a.ageDays,
-  );
-  return { nudges: found, examined, total: open.length };
+  // PASS ONE — cheap. One activity read per ticket, no threads.
+  const facts = new Map<string, TicketFacts>();
+  let examined = 0;
+  await work(queue, async t => {
+    const f = await factsFor(await enrich(t));
+    examined++;
+    if (f) facts.set(t.id, f);
+  });
+
+  // PASS TWO — the thread, but only where it can change the answer.
+  //
+  // `deployedAt` is the strongest signal there is and it lives in the thread, so
+  // skipping threads entirely would throw it away. Reading all of them instead
+  // would pull eighty whole conversations (listByConversation pages CLIENT-side,
+  // so `limit` saves nothing). The middle is to read only the tickets whose code
+  // has actually landed — twenty-three here, a couple of seconds — because those
+  // are the only ones a release note could change the answer for.
+  const candidates = [...facts.values()]
+    .filter(f => f.prs.merged !== null)
+    .sort((a, b) => (a.prs.merged?.at ?? 0) - (b.prs.merged?.at ?? 0))
+    .slice(0, deepen);
+  let deepened = 0;
+  await work(candidates, async f => {
+    const messages = await threadOf(f.conversationId);
+    if (!messages.length) return;
+    deepened++;
+    facts.set(f.id, { ...f, ...readThread(messages) });
+  });
+
+  const found: Nudge[] = [];
+  for (const f of facts.values()) {
+    if (signal?.aborted) break;
+    const n = detect(f, now);
+    if (!n) continue;
+    const state = await readNudgeState(n.ticketId);
+    if (!isDismissed(state, n)) found.push(n);
+  }
+
+  found.sort((a, b) => ORDER.indexOf(a.rule) - ORDER.indexOf(b.rule) || b.ageDays - a.ageDays);
+  return { nudges: found, examined, total: open.length, deepened };
+}
+
+async function threadOf(conversationId?: string): Promise<ThreadMessage[]> {
+  if (!conversationId) return [];
+  try {
+    const { spaces } = await xyne();
+    const page = await spaces.messages.listByConversation(conversationId, { limit: 100 });
+    return (page as unknown as { items?: ThreadMessage[] }).items ?? [];
+  } catch {
+    return [];
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -915,6 +1170,29 @@ export function investigatePrompt(n: Nudge, ownerName: string): { task: string; 
       'rather than guessing.',
     context: `The update agent raised this because: ${n.because}\nThe suggestion offered was: ${n.suggestions[0]?.label ?? 'none'}.`,
   };
+}
+
+/**
+ * The idempotency key for an ask, carried in the message's own marker.
+ *
+ * Storage would be the obvious place to remember "we already asked about this",
+ * and it is the wrong one: a second device, a second viewer, or a cleared
+ * bucket all forget. The ticket does not. `tagUpdate` writes the ref into the
+ * message body as an HTML comment, `parseUpdate` reads it back, and the round
+ * trip is byte-for-byte — so the thread itself is the record of what has been
+ * asked, which is exactly where a reader would look for it anyway.
+ */
+export const askRef = (key: string): string => `nudge:${key.replace(/[^a-z0-9:._-]/gi, '')}`;
+
+/**
+ * Has this exact finding already been put to somebody in this thread?
+ *
+ * Keyed on the finding, not the rule — so a NEW merge on the same ticket asks
+ * again, while the same one does not.
+ */
+export function alreadyAsked(messages: Array<{ content?: string }>, key: string): boolean {
+  const ref = askRef(key).toLowerCase();
+  return messages.some(m => parseUpdate(m.content ?? '').ref === ref);
 }
 
 /**

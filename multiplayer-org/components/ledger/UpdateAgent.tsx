@@ -34,7 +34,9 @@ import type { Nudge, Suggestion } from '../../lib/nudge';
 /** Rules, in the words that go on the eyebrow. */
 const HEADLINE: Record<Nudge['rule'], string> = {
   unanswered: 'waiting on an answer',
+  shipped: 'this one shipped',
   'pr-merged': 'the code landed',
+  'pr-open': 'still in review',
   'pr-declined': 'the code did not land',
   'eta-passed': 'the date passed',
   'gone-quiet': 'gone quiet',
@@ -252,6 +254,8 @@ function ownerNote(reason: Nudge['ownerReason'], who: string): string {
   switch (reason) {
     case 'assignee':
       return `assigned to ${who}`;
+    case 'merged-it':
+      return `${who} settled the pull request`;
     case 'creator':
       return `${who} opened it`;
     case 'last-speaker':
