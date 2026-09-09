@@ -29,6 +29,7 @@ export function MailBridge({
   onSync,
   onReply,
   previewRecipients,
+  alias,
 }: {
   /** Desk threads this ticket already mirrors. */
   linked: DeskRef[];
@@ -43,6 +44,14 @@ export function MailBridge({
   onReply: (body: string) => Promise<void>;
   /** Who a reply would go to. Resolved lazily, only when the box opens. */
   previewRecipients?: () => Promise<string[]>;
+  /**
+   * The address anyone can email so their mail lands on this track.
+   *
+   * This is the answer to "what if someone ELSE emails about this ticket" —
+   * everything else here can only see mail that reached a mailbox this
+   * workspace already ingests. Null when the channel has no mail source.
+   */
+  alias?: string | null;
 }) {
   const [replying, setReplying] = useState(false);
   const [draft, setDraft] = useState('');
@@ -62,7 +71,7 @@ export function MailBridge({
     };
   }, [replying, previewRecipients]);
 
-  if (linked.length === 0 && offered.length === 0) return null;
+  if (linked.length === 0 && offered.length === 0 && !alias) return null;
 
   const send = async (): Promise<void> => {
     const body = draft.trim();
@@ -133,6 +142,26 @@ export function MailBridge({
             style={{ color: replying ? c.text : c.signal }}
           >
             {replying ? 'Cancel' : 'Reply by email'}
+          </button>
+        </div>
+      ) : null}
+
+      {alias ? (
+        <div className="flex items-center gap-2 py-0.5">
+          <span style={{ ...eyebrow, fontSize: '9px', color: c.graphite }}>anyone can email</span>
+          <code
+            className="min-w-0 flex-1 truncate"
+            style={{ fontFamily: mono, fontSize: '10.5px', color: c.text }}
+            title={`${alias} — mail sent here lands on this track, whoever sends it. Put the ticket key in the subject and it lands on the ticket.`}
+          >
+            {alias}
+          </code>
+          <button
+            onClick={() => void navigator.clipboard?.writeText(alias).catch(() => {})}
+            className="shrink-0 rounded px-1.5 py-0.5 text-[11px]"
+            style={{ color: c.signal }}
+          >
+            Copy
           </button>
         </div>
       ) : null}

@@ -845,3 +845,180 @@ export async function previewRecipients(
   const { to } = replyRecipients(mails, { type: 'REPLY_ALL', self });
   return { to, noReplyOnly: to.length > 0 && to.every(isNoReply) };
 }
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * Mail that anyone can send, addressed at the TRACK rather than at a mailbox.
+ *
+ * Everything above starts from a Desk channel, which means it can only see mail
+ * that reached a mailbox this workspace ingests. That is a real limit: if a
+ * colleague emails a third party with your ticket key in the subject and you are
+ * not a recipient, no desk ever sees it and neither do we.
+ *
+ * Xyne's own answer to that is a channel email alias:
+ *
+ *     GET /api/channels/<channelId>/email-alias
+ *     → { emailAlias: "xyne.test+ch_cmjo0gq8h00p3g8c96jn85j5m@juspay.in",
+ *         configured: true, isActive: true, sourceType: "google-…" }
+ *
+ * Anyone — inside the company or outside it — can send to that address and the
+ * mail lands in the channel. No mailbox to share, no desk to join.
+ *
+ * WHAT ARRIVES IS NOT AN EMAIL ROW. For a desk channel the pipeline calls
+ * `addEmailToConversation`; for a work channel it takes the other branch and
+ * calls `createConversationWithMessage` (`integrations/core/core.ts:845-859`),
+ * so alias mail on a track becomes a NEW CONVERSATION carrying one BOT message
+ * whose metadata is `{ messageSubtype: 'channel_email', subject, from, cc }`.
+ * It is in the channel, and it is not on the ticket.
+ *
+ * Which is the same problem as before with a different shape, so it gets the
+ * same answer: read the subject, match the key, mirror it onto the ticket.
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/** The channel-email metadata the ingestion pipeline stamps. */
+interface ChannelEmailMeta {
+  messageSubtype?: unknown;
+  subject?: unknown;
+  from?: unknown;
+  cc?: unknown;
+}
+
+/** A track-addressed email found in a channel, and the ticket it names. */
+export interface ChannelMail {
+  conversationId: string;
+  messageId: string;
+  subject: string;
+  from?: string;
+  ticketKeys: string[];
+  at: number;
+}
+
+/**
+ * Is this message an email sent to the channel's alias, and what does it name?
+ *
+ * Subject only, for the same reason as everywhere else — see `readMailLink`.
+ */
+export function readChannelMail(message: {
+  messageId?: string;
+  id?: string;
+  metadata?: unknown;
+  createdAt?: number;
+}): Omit<ChannelMail, 'conversationId'> | null {
+  const md = message.metadata;
+  if (!md || typeof md !== 'object') return null;
+  const meta = md as ChannelEmailMeta;
+  if (meta.messageSubtype !== 'channel_email') return null;
+  const subject = typeof meta.subject === 'string' ? meta.subject : '';
+  const keys = keysIn(subject).filter((k, i, all) => all.indexOf(k) === i);
+  if (!keys.length) return null;
+  return {
+    messageId: message.messageId ?? message.id ?? '',
+    subject,
+    ...(typeof meta.from === 'string' ? { from: meta.from } : {}),
+    ticketKeys: keys,
+    at: message.createdAt ?? 0,
+  };
+}
+
+/**
+ * Track-addressed mail naming this ticket, in this ticket's own channel.
+ *
+ * Far cheaper than the desk scan and scoped to one channel, so unlike
+ * `loadCandidates` this one CAN run per ticket.
+ */
+export async function channelMailFor(
+  channelId: string | undefined,
+  xyneId: string | undefined,
+  limit = 30,
+): Promise<ChannelMail[]> {
+  if (!channelId || !xyneId) return [];
+  const key = xyneId.toUpperCase();
+  try {
+    const { spaces } = await xyne();
+    const raw = (await spaces.conversations.listLatestByChannel(channelId, {
+      limit,
+    })) as unknown;
+    // The row's id is `conversationId`, NOT `id` — `listLatestByChannel` returns
+    // a denormalised thread row (conversationId, initialMessageId, replyCount,
+    // …). Reading `.id` yielded undefined and this quietly found nothing.
+    const convs = (Array.isArray(raw) ? raw : ((raw as { items?: unknown[] })?.items ?? [])) as Array<{
+      conversationId?: string;
+      id?: string;
+    }>;
+    const found = await Promise.all(
+      convs.map(async cv => {
+        const cid = cv.conversationId ?? cv.id;
+        if (!cid) return null;
+        try {
+          const page = (await spaces.messages.listByConversation(cid, { limit: 5 })) as unknown as {
+            items?: Array<{ messageId?: string; metadata?: unknown; createdAt?: number }>;
+          };
+          for (const m of page?.items ?? []) {
+            const hit = readChannelMail(m);
+            if (hit?.ticketKeys.includes(key)) return { ...hit, conversationId: cid };
+          }
+        } catch {
+          /* a conversation we cannot read names nothing */
+        }
+        return null;
+      }),
+    );
+    return found.filter((x): x is ChannelMail => x !== null).sort((a, b) => b.at - a.at);
+  } catch {
+    return [];
+  }
+}
+
+/** Mirror a track-addressed email onto the ticket. Idempotent, like syncMail. */
+export async function syncChannelMail(
+  mails: ChannelMail[],
+  workConversationId: string,
+): Promise<SyncResult> {
+  if (mails.length === 0) return { copied: 0, skipped: 0, total: 0 };
+  const { spaces } = await xyne();
+  const seen = mirroredRefs(await listThread(workConversationId));
+  let copied = 0;
+  let skipped = 0;
+  for (const mail of [...mails].sort((a, b) => a.at - b.at)) {
+    const ref = mail.messageId ? `chanmail:${mail.messageId.toLowerCase()}` : null;
+    if (!ref || seen.has(ref)) {
+      skipped += 1;
+      continue;
+    }
+    const who = address(mail.from) ?? mail.from ?? 'unknown sender';
+    const org = counterparty(who);
+    await spaces.messages.send({
+      conversationId: workConversationId,
+      content: tagUpdate(
+        'xyne-desk',
+        `**${mail.subject}**\nemailed to this track by ${who}${org ? ` (${org})` : ''}`,
+        'note',
+        ref,
+      ),
+    });
+    seen.add(ref);
+    copied += 1;
+  }
+  return { copied, skipped, total: mails.length };
+}
+
+/**
+ * The address anyone can send to so their mail lands on this track.
+ *
+ * Not on the SDK — an ordinary `/api/` route, so the tunnel carries it. Returns
+ * null when the channel has no mail source connected, which is the common case
+ * and must read as "there is no address" rather than as an error.
+ */
+export async function channelEmailAlias(channelId: string | undefined): Promise<string | null> {
+  if (!channelId) return null;
+  try {
+    const { token } = await import('./xyne');
+    const res = await fetch(`/api/channels/${channelId}/email-alias`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) return null;
+    const body = (await res.json()) as { emailAlias?: string; isActive?: boolean };
+    return body.isActive && body.emailAlias ? body.emailAlias : null;
+  } catch {
+    return null;
+  }
+}

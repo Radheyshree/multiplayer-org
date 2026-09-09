@@ -59,8 +59,11 @@ import {
   bridge as makeBridge,
   bridgesInThread,
   candidatesFor,
+  channelEmailAlias,
+  channelMailFor,
   previewRecipients,
   replyByEmail,
+  syncChannelMail,
   syncMail,
   type Candidate,
   type DeskRef,
@@ -144,6 +147,8 @@ export function Ledger({
   const [offered, setOffered] = useState<Candidate[]>([]);
   const [syncing, setSyncing] = useState(false);
   const [syncNote, setSyncNote] = useState<string | null>(null);
+  /** The address anyone can email to reach this track. */
+  const [alias, setAlias] = useState<string | null>(null);
   /** Desk threads already synced this mount, so the poll does not re-sync. */
   const synced = useRef(new Set<string>());
   const endRef = useRef<HTMLDivElement>(null);
@@ -453,8 +458,21 @@ export function Ledger({
     synced.current = new Set();
     setOffered([]);
     setSyncNote(null);
+    setAlias(null);
+    void channelEmailAlias(item?.channelId).then(a => setAlias(a));
     if (!item?.xyneId) return;
     let live = true;
+    // Track-addressed mail: cheap and scoped to this one channel, so unlike the
+    // desk scan it can run per ticket. Mirrored straight away — the sender chose
+    // to address this track, which is consent enough.
+    void channelMailFor(item.channelId, item.xyneId).then(async mails => {
+      if (!live || mails.length === 0) return;
+      const r = await syncChannelMail(mails, item.conversationId);
+      if (live && r.copied > 0) {
+        setSyncNote(`${r.copied} emailed to this track.`);
+        await onRefresh();
+      }
+    });
     // Deliberately not awaited into the render path — see `loadCandidates`.
     void candidatesFor(item.xyneId).then(rows => {
       if (live) setOffered(rows);
@@ -574,6 +592,7 @@ export function Ledger({
                     (await previewRecipients(linked[0] as DeskRef, [meEmail])).to,
                 }
               : {})}
+            {...(alias ? { alias } : {})}
             onSync={() => runSync(linked, true)}
             onReply={async body => {
               const desk = linked[0];
