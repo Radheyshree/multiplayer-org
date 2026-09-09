@@ -111,10 +111,11 @@ export const CATALOGUE: CatalogueEntry[] = [
   {
     id: 'xyne-scribe',
     name: 'Xyne Scribe',
-    blurb: 'Live, upcoming and past calls with their participants and recordings.',
+    blurb:
+      "Every call the track has had — the summary, what was decided, and what was said. Turn an action item into a ticket, or quote the moment into the one it's about.",
     group: 'Knowledge',
     status: 'live',
-    posts: 'a call linked to the ticket it was about',
+    posts: 'calls, decisions and quotes recorded on a ticket — and tickets made from action items',
   },
   {
     id: 'design-hub',

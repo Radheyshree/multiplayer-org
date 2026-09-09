@@ -4,6 +4,10 @@ What an app author hits when building against `@xyne/spaces-sdk` alone, compared
 dashboard can do. Written while building this app; **every item marked ✅ was reproduced live**
 against `spaces.xyne.juspay.net`, the rest come from reading `apps/backend` and are marked accordingly.
 
+> **Calls and recordings have their own pair of documents**, written against the real Spaces
+> Recordings feature: [`SCRIBE-SDK-GAPS.md`](./SCRIBE-SDK-GAPS.md) for what is missing, and
+> [`SCRIBE-SDK-WINS.md`](./SCRIBE-SDK-WINS.md) for what the SDK made possible there.
+
 ---
 
 ## 1. Ops that lie about what they return

@@ -113,8 +113,24 @@ export const storage = new XyneStorageClient({ baseUrl, token: token ?? '', appI
  * a fraction of the rows. Same endpoint, same auth: the bearer token locally,
  * and the host's cookie when embedded (the shim above tunnels it).
  */
-export async function rawOp<T>(op: string, args: unknown = {}): Promise<T> {
-  const res = await fetch(`${baseUrl}/api/sdk/v1/${op.endsWith('.send') ? 'mutate' : 'query'}`, {
+export async function rawOp<T>(
+  op: string,
+  args: unknown = {},
+  /**
+   * Which half of the gateway to post to.
+   *
+   * The two endpoints are not interchangeable server-side — reads go to the
+   * replica pool and writes open a transaction — so posting a mutator to
+   * `/query` is a 400, not a silent read. This used to be guessed from the op
+   * name (`.send` meant a write), which is right for `messages.send` and wrong
+   * for every mutator that is not named like one: `calls.markMoment`,
+   * `calls.linkNotesCanvas` and `tickets.create` are all writes whose names end
+   * in nothing in particular, so they were unreachable through this path
+   * entirely. The default stays 'query' because every existing caller is a read.
+   */
+  kind: 'query' | 'mutate' = op.endsWith('.send') ? 'mutate' : 'query',
+): Promise<T> {
+  const res = await fetch(`${baseUrl}/api/sdk/v1/${kind}`, {
     method: 'POST',
     headers: {
       Accept: 'application/json',

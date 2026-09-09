@@ -122,7 +122,7 @@ export const ORG_APPS: OrgApp[] = [
   {
     id: 'xyne-scribe',
     name: 'Xyne Scribe',
-    blurb: 'Live, upcoming and past calls — link one to the ticket it was about.',
+    blurb: "Calls, what they decided, and what was said — into the ticket it's about.",
     Component: Scribe,
     fullBleed: true,
   },
