@@ -27,8 +27,14 @@
  *
  * The trade is isolation. Generated code CAN reach into Studio's DOM. That is
  * acceptable for code the viewer just asked an agent to write and is watching
- * run; it would not be acceptable for running someone else's app, and Studio
- * does not do that.
+ * run. The store's workspace section (components/WorkspaceApps.tsx) runs
+ * OTHER people's published apps through this same runtime, and that is a
+ * considered extension rather than drift: publishing to the workspace has
+ * always meant members run your code with their own access — the official
+ * Library grants a published app the viewer-scoped data bridge too — so the
+ * only delta here is DOM reach into this shell, which holds no secret the
+ * bridge does not already grant. The stage is contained and error-bounded,
+ * and non-owners are only ever served the pinned published version.
  */
 import { transform } from 'sucrase';
 import { hostReact, joinPath, resolveHostModule } from './studioHost';

@@ -5,8 +5,9 @@
  * does NOT stream — `result` is empty for the whole run and lands whole at the
  * end (measured: 0 bytes at 51s, 4,872 at 66s). Every AI builder fills that gap
  * with a typing animation. We can't, and shouldn't. What each poll DOES give us
- * is real: the tool running right now, how many have run, and how long it has
- * been going. Those move, so those are what a running turn shows.
+ * is real: the tool running right now, how many have run, the agent's own
+ * reasoning tail, and how long it has been going. Those move, so those are what
+ * a running turn shows.
  *
  * THE SECOND PROBLEM is that all of it used to be live-only. Tool calls arrived
  * on the progress stream and vanished the moment the page reloaded, so a turn
@@ -15,25 +16,66 @@
  * (lib/studioStore.ts), and this renders from THAT — so a finished turn reads
  * identically whether you saw it happen or opened the project a day later.
  *
- * The shape follows the same idea as AI Studio's action history: what the agent
- * did, collapsible, above what it says about it — and a checkpoint row, because
- * the useful thing to do with a past turn is compare it or go back to it.
+ * FOLLOWUPS are read off the project, not off a list. A fixed set of
+ * suggestions is wallpaper by the second project; these look at what the app's
+ * files actually lack — no SDK import, no dark mode, one oversized file — and
+ * suggest the thing that is true of THIS app. The shuffle control deals a
+ * different hand from the same reasoning.
  */
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { c, eyebrow, mono } from '../../lib/theme';
 import type { RunProgress } from '../../lib/studioClaw';
+import type { StudioFile } from '../../lib/studioProtocol';
 import type { Turn, TurnAction } from '../../lib/studioStore';
+import { Ring, riseIn } from './StudioFx';
 
-const FOLLOWUPS = [
+/** Always-true suggestions, dealt in when the file-derived ones run out. */
+const EVERGREEN = [
   'Make it look more polished — better spacing, hierarchy and empty states',
-  'Add a search box that filters what is shown',
-  'Load real data from the workspace with the xyne SDK instead of the seeded values',
-  'Add a dark mode toggle',
-  'Split the biggest file into smaller components',
+  'Add keyboard shortcuts for the main actions',
+  'Add smooth transitions when things appear and change',
+  'Persist the state in localStorage so a reload keeps my data',
+  'Show loading skeletons instead of blank space while data loads',
+  'Make the layout work at phone width',
 ];
+
+/**
+ * Read the project and say what it is missing. Every rule checks the actual
+ * source, so a suggestion is only offered while it is still true — the moment
+ * the agent adds a dark mode, the dark-mode chip stops appearing.
+ */
+function suggestFollowups(files: StudioFile[], deal: number): string[] {
+  const source = files.map(f => f.content).join('\n');
+  const derived: string[] = [];
+
+  if (files.length > 0) {
+    if (!/from\s+['"]xyne['"]|spaces\./.test(source))
+      derived.push('Load real data from the workspace with the xyne SDK instead of the seeded values');
+    if (!/dark/i.test(source)) derived.push('Add a dark mode toggle');
+    const biggest = files.reduce((a, b) => (b.content.length > a.content.length ? b : a), files[0]);
+    if (biggest.content.split('\n').length > 150)
+      derived.push(`Split ${biggest.path} into smaller components`);
+    if (!/<input|<select|<textarea/i.test(source))
+      derived.push('Add a search box that filters what is shown');
+    if (!/aria-|<label/i.test(source))
+      derived.push('Add labels and aria attributes so it works with a screen reader');
+  }
+
+  // Rotate the evergreen pool by the deal so the shuffle control always has
+  // somewhere new to go, then top the hand up to three.
+  const pool = [...EVERGREEN.slice(deal % EVERGREEN.length), ...EVERGREEN.slice(0, deal % EVERGREEN.length)];
+  const start = deal % Math.max(derived.length, 1);
+  const hand = [...derived.slice(start), ...derived.slice(0, start)];
+  for (const idea of pool) {
+    if (hand.length >= 3) break;
+    if (!hand.includes(idea)) hand.push(idea);
+  }
+  return hand.slice(0, 3);
+}
 
 export function StudioTimeline({
   turns,
+  files,
   running,
   agentName,
   draft,
@@ -45,6 +87,8 @@ export function StudioTimeline({
   onViewChanges,
 }: {
   turns: Turn[];
+  /** The current head's files — read (never written) to suggest followups. */
+  files: StudioFile[];
   running: RunProgress | null;
   agentName: string;
   draft: string;
@@ -57,6 +101,8 @@ export function StudioTimeline({
   onViewChanges: (version: number) => void;
 }) {
   const scroller = useRef<HTMLDivElement | null>(null);
+  const [deal, setDeal] = useState(0);
+  const followups = useMemo(() => suggestFollowups(files, deal), [files, deal]);
 
   useEffect(() => {
     const node = scroller.current;
@@ -66,7 +112,7 @@ export function StudioTimeline({
   const busy = Boolean(running);
 
   return (
-    <div className="flex h-full min-h-0 flex-col" style={{ background: c.paper }}>
+    <div className="sfx-anim flex h-full min-h-0 flex-col" style={{ background: c.paper }}>
       <div ref={scroller} className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
         {turns.length === 0 && !busy ? (
           <p className="px-1 text-[13px] leading-relaxed" style={{ color: c.graphite }}>
@@ -77,7 +123,7 @@ export function StudioTimeline({
 
         <ul className="space-y-4">
           {turns.map(turn => (
-            <li key={turn.id}>
+            <li key={turn.id} style={{ animation: 'sfx-up 0.3s cubic-bezier(0.2, 0.7, 0.2, 1) both' }}>
               <TurnCard
                 turn={turn}
                 agentName={agentName}
@@ -91,17 +137,34 @@ export function StudioTimeline({
         </ul>
 
         {turns.length > 0 && !busy ? (
-          <div className="mt-4 flex flex-wrap gap-1.5">
-            {FOLLOWUPS.slice(0, 3).map(text => (
+          <div className="mt-4">
+            <div className="flex items-center gap-1.5 px-0.5">
+              <span style={{ ...eyebrow, color: c.mute }}>Try next</span>
               <button
-                key={text}
-                onClick={() => onDraft(text)}
-                className="rounded-full px-2.5 py-1 text-left text-[11px] transition-colors"
-                style={{ border: `1px solid ${c.line}`, color: c.graphite, background: c.card }}
+                onClick={() => setDeal(d => d + 1)}
+                className="rounded px-1 text-[12px] leading-none transition-transform active:rotate-180"
+                style={{ color: c.mute }}
+                title="Deal different suggestions"
+                aria-label="Shuffle the suggestions"
               >
-                {text.length > 44 ? `${text.slice(0, 43)}…` : text}
+                ⟳
               </button>
-            ))}
+            </div>
+            <div className="mt-1.5 flex flex-wrap gap-1.5">
+              {followups.map((text, i) => (
+                <button
+                  key={text}
+                  onClick={() => onDraft(text)}
+                  className="rounded-full px-2.5 py-1 text-left text-[11px] transition-all duration-150"
+                  style={{ ...riseIn(i), border: `1px solid ${c.line}`, color: c.graphite, background: c.card }}
+                  onMouseEnter={e => { e.currentTarget.style.borderColor = c.signal; e.currentTarget.style.color = c.signal; }}
+                  onMouseLeave={e => { e.currentTarget.style.borderColor = c.line; e.currentTarget.style.color = c.graphite; }}
+                  title={text}
+                >
+                  {text.length > 44 ? `${text.slice(0, 43)}…` : text}
+                </button>
+              ))}
+            </div>
           </div>
         ) : null}
       </div>
@@ -152,20 +215,25 @@ function TurnCard({
         </p>
       </div>
 
-      <div className="mt-2 flex items-baseline gap-2 px-0.5">
+      <div className="mt-2 flex items-center gap-2 px-0.5">
         <span className="text-[11px]" style={{ fontFamily: mono, color: c.graphite }}>
           {agentName}
         </span>
         <span style={{ color: c.mute }}>·</span>
-        <span className="text-[11px]" style={{ fontFamily: mono, color: c.mute }}>
-          {live ? `Running ${seconds}s` : seconds > 0 ? `Ran for ${seconds}s` : 'Done'}
+        <span className="text-[11px] tabular-nums" style={{ fontFamily: mono, color: c.mute }}>
+          {live ? `${seconds}s` : seconds > 0 ? `Ran for ${seconds}s` : 'Done'}
         </span>
-        {live ? <Pulse /> : null}
+        {live ? (
+          <span className="ml-auto">
+            <Ring />
+          </span>
+        ) : null}
       </div>
 
       <ActionHistory
         live={live}
         label={running?.label ?? null}
+        reasoning={live ? (running?.reasoning ?? '') : ''}
         actions={actions}
         wrote={turn.wrote ?? []}
         removed={turn.removed ?? []}
@@ -220,12 +288,15 @@ function TurnCard({
 function ActionHistory({
   live,
   label,
+  reasoning,
   actions,
   wrote,
   removed,
 }: {
   live: boolean;
   label: string | null;
+  /** The agent's own thinking tail, straight off the poll. Live only. */
+  reasoning: string;
   actions: TurnAction[];
   wrote: string[];
   removed: string[];
@@ -251,9 +322,10 @@ function ActionHistory({
         onClick={() => !live && setOpen(v => !v)}
         className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left"
         style={{ cursor: live ? 'default' : 'pointer' }}
+        aria-expanded={expanded}
       >
-        <span style={{ ...eyebrow, color: c.mute }}>Actions</span>
-        <span className="truncate text-[12px]" style={{ color: c.text }}>
+        <span style={{ ...eyebrow, color: live ? c.signal : c.mute }}>Actions</span>
+        <span className={`truncate text-[12px]${live ? ' sfx-dots' : ''}`} style={{ color: c.text }}>
           {headline}
         </span>
         {!live ? (
@@ -263,19 +335,32 @@ function ActionHistory({
         ) : null}
       </button>
 
+      {/* The only honest progress bar: it promises motion, not a percentage. */}
+      {live ? (
+        <div
+          aria-hidden
+          style={{
+            height: 2,
+            background: `linear-gradient(90deg, transparent, ${c.signal}, transparent)`,
+            backgroundSize: '200% 100%',
+            animation: 'sfx-shimmer 1.4s linear infinite',
+          }}
+        />
+      ) : null}
+
       {expanded ? (
-        <div className="px-2.5 pb-2">
+        <div className="px-2.5 pb-2 pt-1">
           {wrote.length ? (
             <ul className="space-y-0.5">
-              {wrote.map(path => (
-                <FileRow key={path} path={path} kind="wrote" />
+              {wrote.map((path, i) => (
+                <FileRow key={path} path={path} kind="wrote" i={i} />
               ))}
             </ul>
           ) : null}
           {removed.length ? (
             <ul className="mt-0.5 space-y-0.5">
-              {removed.map(path => (
-                <FileRow key={path} path={path} kind="removed" />
+              {removed.map((path, i) => (
+                <FileRow key={path} path={path} kind="removed" i={i} />
               ))}
             </ul>
           ) : null}
@@ -286,7 +371,12 @@ function ActionHistory({
                 <span
                   key={`${action.name}-${i}`}
                   className="rounded px-1.5 py-0.5 text-[10.5px]"
-                  style={{ fontFamily: mono, background: c.signalSoft, color: c.signal }}
+                  style={{
+                    fontFamily: mono,
+                    background: c.signalSoft,
+                    color: c.signal,
+                    animation: 'sfx-pop 0.25s ease-out both',
+                  }}
                 >
                   {action.name}
                   {action.detail ? ` ${action.detail}` : ''}
@@ -298,15 +388,25 @@ function ActionHistory({
               No tool calls yet — the agent is composing its reply.
             </p>
           ) : null}
+
+          {live && reasoning ? (
+            <p
+              className="mt-1.5 border-t pt-1.5 text-[11px] italic leading-snug"
+              style={{ borderColor: c.line, color: c.mute }}
+              title="The agent's reasoning, as it streams"
+            >
+              {reasoning.length > 180 ? `…${reasoning.slice(-180)}` : reasoning}
+            </p>
+          ) : null}
         </div>
       ) : null}
     </div>
   );
 }
 
-function FileRow({ path, kind }: { path: string; kind: 'wrote' | 'removed' }) {
+function FileRow({ path, kind, i }: { path: string; kind: 'wrote' | 'removed'; i: number }) {
   return (
-    <li className="flex items-center gap-1.5">
+    <li className="flex items-center gap-1.5" style={riseIn(i)}>
       <span
         className="text-[11px]"
         style={{ fontFamily: mono, color: kind === 'wrote' ? c.live : c.attention }}
@@ -344,7 +444,7 @@ function Checkpoint({
       <div className="ml-auto flex items-center gap-1.5">
         <button
           onClick={() => onViewChanges(version)}
-          className="rounded px-2 py-1 text-[11px]"
+          className="rounded px-2 py-1 text-[11px] transition-colors"
           style={{ fontFamily: mono, color: c.graphite, border: `1px solid ${c.line}`, background: c.card }}
         >
           View changes
@@ -352,7 +452,7 @@ function Checkpoint({
         <button
           onClick={() => onRestore(version)}
           disabled={!canRestore}
-          className="rounded px-2 py-1 text-[11px] disabled:opacity-40"
+          className="rounded px-2 py-1 text-[11px] transition-colors disabled:opacity-40"
           style={{ fontFamily: mono, color: c.graphite, border: `1px solid ${c.line}`, background: c.card }}
           title={canRestore ? 'Make this version the head' : 'Wait for the current turn to finish'}
         >
@@ -379,20 +479,6 @@ function collapse(names: string[]): TurnAction[] {
   return out;
 }
 
-function Pulse() {
-  const [on, setOn] = useState(true);
-  useEffect(() => {
-    const id = setInterval(() => setOn(v => !v), 620);
-    return () => clearInterval(id);
-  }, []);
-  return (
-    <span
-      className="ml-auto size-1.5 shrink-0 rounded-full transition-opacity"
-      style={{ background: c.signal, opacity: on ? 1 : 0.25 }}
-    />
-  );
-}
-
 function Composer({
   draft,
   busy,
@@ -408,25 +494,35 @@ function Composer({
   onStop: () => void;
   placeholder: string;
 }) {
+  const [focused, setFocused] = useState(false);
   return (
     <div className="shrink-0 p-2.5" style={{ borderTop: `1px solid ${c.line}`, background: c.card }}>
-      <textarea
-        value={draft}
-        onChange={e => onDraft(e.target.value)}
-        onKeyDown={e => {
-          if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-            e.preventDefault();
-            if (!busy && draft.trim()) onSend();
-          }
+      <div
+        className="rounded-lg p-px transition-all duration-200"
+        style={{
+          background: focused ? `linear-gradient(120deg, ${c.signal}, ${c.agent})` : c.line,
         }}
-        rows={3}
-        placeholder={placeholder}
-        className="w-full resize-none rounded-md px-2.5 py-2 text-[13px] leading-snug outline-none"
-        style={{ border: `1px solid ${c.line}`, background: c.paper, color: c.text }}
-      />
+      >
+        <textarea
+          value={draft}
+          onChange={e => onDraft(e.target.value)}
+          onFocus={() => setFocused(true)}
+          onBlur={() => setFocused(false)}
+          onKeyDown={e => {
+            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+              e.preventDefault();
+              if (!busy && draft.trim()) onSend();
+            }
+          }}
+          rows={3}
+          placeholder={placeholder}
+          className="w-full resize-none rounded-[7px] px-2.5 py-2 text-[13px] leading-snug outline-none"
+          style={{ background: c.paper, color: c.text, display: 'block' }}
+        />
+      </div>
       <div className="mt-1.5 flex items-center gap-2">
         <span className="text-[10.5px]" style={{ fontFamily: mono, color: c.mute }}>
-          Cmd + Enter to send
+          ⌘↵ to send
         </span>
         <div className="ml-auto flex gap-1.5">
           {busy ? (
@@ -434,6 +530,7 @@ function Composer({
               onClick={onStop}
               className="rounded px-2.5 py-1.5 text-[11.5px]"
               style={{ fontFamily: mono, color: c.graphite, border: `1px solid ${c.line}` }}
+              title="Stop watching this run — it keeps going, and reopening the project picks it back up"
             >
               Stop watching
             </button>
@@ -441,10 +538,10 @@ function Composer({
           <button
             onClick={onSend}
             disabled={busy || !draft.trim()}
-            className="rounded px-3 py-1.5 text-[11.5px] transition-opacity disabled:opacity-40"
-            style={{ fontFamily: mono, background: c.signal, color: c.paper }}
+            className="rounded-full px-3 py-1.5 text-[11.5px] transition-all disabled:opacity-40"
+            style={{ fontFamily: mono, background: c.signal, color: c.signalText }}
           >
-            {busy ? 'Running' : 'Send'}
+            {busy ? 'Running' : 'Send ↑'}
           </button>
         </div>
       </div>

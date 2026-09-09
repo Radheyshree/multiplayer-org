@@ -11,6 +11,7 @@
  * it. The store is the natural seam — three props, no shared state.
  */
 import { CATALOGUE, GROUPS } from '../orgApps/catalogue';
+import { WorkspaceApps } from './WorkspaceApps';
 import type { Registry, RegistryApp } from '../lib/apps';
 import { Button } from './ui/button';
 import { Skeleton } from './ui/skeleton';
@@ -134,6 +135,12 @@ export function Store({
               </section>
             );
           })}
+
+          {/* Apps the workspace's own people built in Studio and published.
+              Unlike the catalogue above these are fetched and evaluated at
+              open time, so publishing one requires no new deploy of this
+              shell — see components/WorkspaceApps.tsx. */}
+          <WorkspaceApps />
 
           {/* The other half of the answer: what this WORKSPACE has
               installed, read from admin.* rather than from a list we

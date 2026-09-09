@@ -274,6 +274,33 @@ const run = (await spaces.claw.getRun(id)) as unknown as ClawRun & {
 
 ---
 
+## 4f. Artifact apps are invisible to the SDK — publish, list and fetch are REST-only
+
+The workspace Library — user-built apps created in Studio or from chat, published for the whole
+workspace — has **no SDK surface at all**. Verified against the mapper's full allowlist: none of the
+468 operations creates, versions, publishes, unpublishes, lists or fetches an artifact app.
+
+The trap is that the SDK *looks* like it covers this. `admin.listOrgApps`, `admin.listMarketplaceApps`
+and `admin.listInstalledApps` exist and return "apps" — but they read the Spaces `apps` /
+`installed_apps` tables, which are the **bot/integration registry** (rows with `webhookUrl`,
+`signingSecret`, install/uninstall — the Slack-app concept). Artifact apps live in a different table
+(`artifact_apps`), in a different database, owned by a different service
+(`apps/xyne-claw-auth/backend`), whose only connection to the Spaces DB is read-only by Postgres
+grant. A published artifact app can therefore **never** appear in any `admin.*` listing.
+
+The real surface is `/claw/api/v1/artifact-apps` (cookie-auth, forwarded to Spaces `/api/auth/me`):
+create, `POST /:id/versions`, `publish` (pins a version, `visibility=WORKSPACE`), `unpublish`,
+`GET /?scope=mine|workspace`, `GET /:id/payload` (non-owners are always served the pinned published
+version — drafts stay private). Reachable from a published app because the host tunnels `/claw/*`
+as the signed-in viewer; unreachable from a dev server, whose bearer token this router rejects.
+
+**What Scribe/Studio do about it:** `lib/studioDeploy.ts` wraps the REST routes for Studio's deploy
+buttons, and `components/WorkspaceApps.tsx` uses the same routes to list every published app in the
+store and run it through Studio's own runtime. **The ask:** `apps.listPublished` and
+`apps.getPayload` gateway ops — the routes, permission checks and data already exist.
+
+---
+
 ## 5. No realtime *over the SDK* — but a published app gets more
 
 **Correction.** An earlier version of this document said flatly "no realtime, poll or do without".

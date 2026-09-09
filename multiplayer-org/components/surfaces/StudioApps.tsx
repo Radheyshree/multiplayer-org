@@ -13,6 +13,7 @@
  */
 import { useMemo, useState } from 'react';
 import { c, eyebrow, mono } from '../../lib/theme';
+import { riseIn, Shimmer } from './StudioFx';
 import type { StudioProject } from '../../lib/studioStore';
 
 type Sort = 'updated' | 'created' | 'name';
@@ -128,7 +129,18 @@ export function StudioApps({
           </div>
 
           {loading ? (
-            <Message text="Loading your apps…" />
+            <ul aria-label="Loading">
+              {[0, 1, 2, 3].map(i => (
+                <li key={i} className="grid grid-cols-[1fr_170px_90px] items-center gap-3 px-4 py-2.5" style={{ borderTop: `1px solid ${c.line}` }}>
+                  <span className="flex items-center gap-3">
+                    <Shimmer w={30} h={30} r={8} />
+                    <span><Shimmer w={180} h={12} /><Shimmer w={120} h={9} style={{ marginTop: 6 }} /></span>
+                  </span>
+                  <Shimmer w={90} h={10} />
+                  <span className="flex justify-end"><Shimmer w={52} h={22} /></span>
+                </li>
+              ))}
+            </ul>
           ) : rows.length === 0 ? (
             <Message
               text={
@@ -141,11 +153,13 @@ export function StudioApps({
             />
           ) : (
             <ul>
-              {rows.map(project => (
+              {rows.map((project, i) => (
                 <li
                   key={project.id}
-                  className="grid grid-cols-[1fr_170px_90px] items-center gap-3 px-4 py-2.5"
-                  style={{ borderTop: `1px solid ${c.line}` }}
+                  className="sfx-anim grid grid-cols-[1fr_170px_90px] items-center gap-3 px-4 py-2.5 transition-colors"
+                  style={{ ...riseIn(i), borderTop: `1px solid ${c.line}` }}
+                  onMouseEnter={e => { e.currentTarget.style.background = c.paper; }}
+                  onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
                 >
                   <button onClick={() => onOpen(project)} className="flex min-w-0 items-center gap-3 text-left">
                     <AppGlyph title={project.title} />

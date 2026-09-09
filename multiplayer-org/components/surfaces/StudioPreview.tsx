@@ -19,6 +19,7 @@
  */
 import { Component, useEffect, useMemo, useRef, useState, type ErrorInfo, type ReactNode } from 'react';
 import { c, eyebrow, mono } from '../../lib/theme';
+import { Ring, Shimmer } from './StudioFx';
 import { evaluateProject, toRuntimeError, type RuntimeError } from '../../lib/studioRuntime';
 import type { StudioFile } from '../../lib/studioProtocol';
 
@@ -266,8 +267,33 @@ function Empty({ busy, missing }: { busy: boolean; missing: boolean }) {
       ? 'The agent is writing the first version. A turn usually takes under a minute, sometimes several.'
       : 'Describe what you want and the preview appears here, running for real.';
   return (
-    <div className="absolute inset-0 grid place-items-center px-8 text-center">
+    <div className="sfx-anim absolute inset-0 grid place-items-center px-8 text-center">
       <div>
+        {busy && !missing ? (
+          // A wireframe of an app taking shape — the promise, drawn instead of
+          // described. Purely decorative; the sentence below still says it.
+          <div
+            aria-hidden
+            className="mx-auto mb-5 w-56 rounded-lg p-3"
+            style={{ border: `1px solid ${c.line}`, background: c.card, animation: 'sfx-up 0.4s ease-out both' }}
+          >
+            <div className="flex items-center gap-2">
+              <Shimmer w={20} h={20} r={10} />
+              <Shimmer w="55%" h={9} />
+              <span className="ml-auto">
+                <Ring size={14} />
+              </span>
+            </div>
+            <div className="mt-3 grid grid-cols-3 gap-1.5">
+              <Shimmer w="100%" h={30} />
+              <Shimmer w="100%" h={30} />
+              <Shimmer w="100%" h={30} />
+            </div>
+            <Shimmer w="100%" h={8} style={{ marginTop: 10 }} />
+            <Shimmer w="80%" h={8} style={{ marginTop: 6 }} />
+            <Shimmer w="90%" h={8} style={{ marginTop: 6 }} />
+          </div>
+        ) : null}
         <div style={{ ...eyebrow, color: missing ? c.attention : c.mute }}>{title}</div>
         <p className="mt-2 max-w-sm text-[13px]" style={{ color: c.graphite }}>
           {body}

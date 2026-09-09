@@ -75,6 +75,7 @@ import {
 } from '../../lib/studioStore';
 import { buildPayload, createApp, publishApp, pushVersion } from '../../lib/studioDeploy';
 import { StudioApps } from './StudioApps';
+import { StudioFx } from './StudioFx';
 import { StudioCode } from './StudioCode';
 import { AgentPicker, StudioHome } from './StudioHome';
 import { StudioPreview } from './StudioPreview';
@@ -563,6 +564,7 @@ export function Studio() {
   if (!project) {
     return (
       <div className="grid h-full min-h-0 grid-rows-[auto_1fr]">
+        <StudioFx />
         <header
           className="flex shrink-0 items-center gap-3 px-3 py-2"
           style={{ borderBottom: `1px solid ${c.line}`, background: c.card }}
@@ -633,6 +635,7 @@ export function Studio() {
 
   return (
     <div className="grid h-full min-h-0 grid-rows-[auto_1fr]">
+      <StudioFx />
       <header
         className="flex shrink-0 items-center gap-3 px-3 py-2"
         style={{ borderBottom: `1px solid ${c.line}`, background: c.card }}
@@ -702,6 +705,7 @@ export function Studio() {
         <div className="min-h-0" style={{ borderRight: `1px solid ${c.line}` }}>
           <StudioTimeline
             turns={project.turns}
+            files={files}
             running={running}
             agentName={agentName}
             draft={draft}
