@@ -54,6 +54,17 @@ import { MessageRow, type LedgerMessage } from './MessageRow';
 import { Related } from './Related';
 import { Surfaces } from './Surfaces';
 import { learnFrom, loadMailThread, type MailThread } from '../../lib/mailthread';
+import { MailBridge } from './MailBridge';
+import {
+  bridge as makeBridge,
+  bridgesInThread,
+  candidatesFor,
+  previewRecipients,
+  replyByEmail,
+  syncMail,
+  type Candidate,
+  type DeskRef,
+} from '../../lib/mailbridge';
 
 const LAYERS: Array<{ id: Layer; label: string }> = [
   { id: 'all', label: 'All' },
@@ -76,6 +87,7 @@ export function Ledger({
   messages,
   channel,
   meId,
+  meEmail,
   agents,
   busy,
   description,
@@ -88,6 +100,8 @@ export function Ledger({
   /** The channel this thread lives in — the primary provenance signal. */
   channel?: ChannelLike | null;
   meId?: string;
+  /** The signed-in address, so a reply-all can exclude it. */
+  meEmail?: string;
   agents: AgentOption[];
   busy: boolean;
   description?: string;
@@ -119,6 +133,19 @@ export function Ledger({
    * than a row of zeroes.
    */
   const [mail, setMail] = useState<MailThread | null>(null);
+  /**
+   * The mail bridge.
+   *
+   * `linked` comes off THIS ticket's own messages — free, exact, and available
+   * the moment the thread loads. `offered` comes from the desk scan, which is
+   * slow (19s cold) and therefore never blocks anything: it arrives late and
+   * only adds a row.
+   */
+  const [offered, setOffered] = useState<Candidate[]>([]);
+  const [syncing, setSyncing] = useState(false);
+  const [syncNote, setSyncNote] = useState<string | null>(null);
+  /** Desk threads already synced this mount, so the poll does not re-sync. */
+  const synced = useRef(new Set<string>());
   const endRef = useRef<HTMLDivElement>(null);
   const abort = useRef<AbortController | null>(null);
   /** Guards against a second evaluation starting while one is mid-dispatch. */
@@ -380,6 +407,63 @@ export function Ledger({
     learnFrom(messages);
   }, [messages]);
 
+  const linked: DeskRef[] = useMemo(() => bridgesInThread(messages), [messages]);
+
+  /**
+   * Copy anything new off the linked mail threads.
+   *
+   * Runs when a ticket opens and whenever a new bridge appears — not on every
+   * poll: `syncMail` reads the desk's mail and this ticket's whole thread, and
+   * doing that every five seconds to discover nothing would be the most
+   * expensive no-op in the app. New mail arrives in minutes, not seconds, and
+   * "Sync now" is there for impatience.
+   */
+  const runSync = useCallback(
+    async (refs: DeskRef[], announce: boolean): Promise<void> => {
+      if (!item || refs.length === 0) return;
+      setSyncing(true);
+      try {
+        let copied = 0;
+        for (const desk of refs) {
+          const r = await syncMail({ desk, workConversationId: item.conversationId });
+          copied += r.copied;
+          synced.current.add(desk.conversationId);
+        }
+        if (copied > 0) {
+          setSyncNote(`${copied} mail${copied === 1 ? '' : 's'} copied.`);
+          await onRefresh();
+        } else if (announce) {
+          setSyncNote('Up to date.');
+        }
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setSyncing(false);
+      }
+    },
+    [item, onRefresh],
+  );
+
+  useEffect(() => {
+    const fresh = linked.filter(d => !synced.current.has(d.conversationId));
+    if (fresh.length) void runSync(fresh, false);
+  }, [linked, runSync]);
+
+  useEffect(() => {
+    synced.current = new Set();
+    setOffered([]);
+    setSyncNote(null);
+    if (!item?.xyneId) return;
+    let live = true;
+    // Deliberately not awaited into the render path — see `loadCandidates`.
+    void candidatesFor(item.xyneId).then(rows => {
+      if (live) setOffered(rows);
+    });
+    return () => {
+      live = false;
+    };
+  }, [item?.id, item?.xyneId]);
+
   useEffect(() => {
     let live = true;
     setMail(null);
@@ -392,9 +476,22 @@ export function Ledger({
     };
   }, [item?.id, item?.conversationId, item?.channelId, messages.length]);
 
-  const visible = messages.filter(m =>
-    matchesLayer(layer, parseUpdate(m.content ?? ''), m.msgType === 'BOT'),
-  );
+  /**
+   * The thread, minus anything mirrored twice.
+   *
+   * A mirrored line carries the id of the thing it mirrors, so a duplicate is
+   * exactly detectable rather than guessed at. `syncMail` holds a lock that
+   * stops one page racing itself; this covers the case it cannot — a second
+   * browser tab on the same ticket, both syncing, both writing. The first copy
+   * wins because it is the one already in the record.
+   */
+  const visible = messages
+    .filter(m => matchesLayer(layer, parseUpdate(m.content ?? ''), m.msgType === 'BOT'))
+    .filter((m, i, all) => {
+      const ref = parseUpdate(m.content ?? '').ref;
+      if (!ref) return true;
+      return all.findIndex(o => parseUpdate(o.content ?? '').ref === ref) === i;
+    });
 
   if (!item) {
     return (
@@ -440,6 +537,61 @@ export function Ledger({
           {/* Which systems this work is spread across. Computed from the same
               rows the thread badges, so the two can never disagree. */}
           <Surfaces messages={messages} channel={channel} mail={mail} />
+
+          {/* The mail thread the PR is being discussed on, if there is one. */}
+          <MailBridge
+            linked={linked}
+            offered={offered.filter(o => !linked.some(l => l.conversationId === o.desk.conversationId))}
+            syncing={syncing}
+            note={syncNote}
+            onLink={async cand => {
+              if (!item) return;
+              setSyncing(true);
+              try {
+                await makeBridge({
+                  desk: cand.desk,
+                  work: {
+                    id: item.id,
+                    conversationId: item.conversationId,
+                    ...(item.xyneId ? { xyneId: item.xyneId } : {}),
+                    ...(item.title ? { title: item.title } : {}),
+                  },
+                  notification: cand.notification,
+                });
+                await syncMail({ desk: cand.desk, workConversationId: item.conversationId });
+                synced.current.add(cand.desk.conversationId);
+                setOffered(prev => prev.filter(o => o.desk.id !== cand.desk.id));
+                await onRefresh();
+              } catch (e) {
+                setError(e instanceof Error ? e.message : String(e));
+              } finally {
+                setSyncing(false);
+              }
+            }}
+            {...(linked[0] && meEmail
+              ? {
+                  previewRecipients: async () =>
+                    (await previewRecipients(linked[0] as DeskRef, [meEmail])).to,
+                }
+              : {})}
+            onSync={() => runSync(linked, true)}
+            onReply={async body => {
+              const desk = linked[0];
+              if (!desk) return;
+              const { to } = await replyByEmail({
+                desk,
+                body,
+                // Our own addresses, so a reply-all does not mail us a copy that
+                // would come back in as a new inbound message.
+                self: [meEmail, ...(meEmail ? [] : [])].filter(Boolean) as string[],
+              });
+              setSyncNote(`Sent to ${to.join(', ')}.`);
+              // The sent mail becomes an Email row on the desk thread; copying it
+              // back is what puts the reply in this conversation.
+              synced.current.delete(desk.conversationId);
+              await runSync([desk], true);
+            }}
+          />
 
           {/* Layers. Completeness for the agent, legibility for people. */}
           <div className="flex shrink-0 items-center gap-1 px-3 py-1.5" style={{ borderBottom: `1px solid ${c.line}` }}>

@@ -23,12 +23,15 @@
 import { sourceOf, type ChannelLike, type MessageLike } from '../../lib/provenance';
 import { parseUpdate } from '../../lib/appUpdate';
 import { c, mono, eyebrow } from '../../lib/theme';
+import { SurfaceIcon } from './SurfaceIcon';
 import type { MailThread } from '../../lib/mailthread';
 
 export interface Surface {
   key: string;
   label: string;
   glyph: string;
+  /** What the icon mapping keys off — the resolved source, not the chip. */
+  icon: { id: string; system?: { id: string } };
   count: number;
   external: boolean;
   /** The most recent row that carried a way back out. */
@@ -62,6 +65,7 @@ export function surfacesOf(messages: MessageLike[], channel?: ChannelLike | null
       key,
       label,
       glyph: src.glyph,
+      icon: { id: src.id, ...(src.system ? { system: { id: src.system.id } } : {}) },
       count: 0,
       external: src.system?.external ?? OUTSIDE.has(key),
       orgs: [],
@@ -104,6 +108,7 @@ function withMail(surfaces: Surface[], mail: MailThread | null): Surface[] {
     key: mail.provider?.id ?? 'email',
     label: mail.provider?.name ?? 'Email',
     glyph: mail.provider?.glyph ?? '✉',
+    icon: { id: 'email', ...(mail.provider ? { system: { id: mail.provider.id } } : {}) },
     // The email count is the truth about how much mail there is; the message
     // count double-counts long mails, which the pipeline splits into chunks.
     count: mail.count,
@@ -146,9 +151,10 @@ export function Surfaces({
       {surfaces.map(s => {
         const body = (
           <>
-            <span aria-hidden style={{ opacity: 0.75 }}>
-              {s.glyph}
-            </span>
+            <SurfaceIcon
+              source={s.icon as unknown as Parameters<typeof SurfaceIcon>[0]['source']}
+              size={11}
+            />
             <span>{s.label}</span>
             <span className="tabular-nums" style={{ opacity: 0.6 }}>
               {s.count}

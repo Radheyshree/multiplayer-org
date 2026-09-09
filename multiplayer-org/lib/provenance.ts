@@ -368,9 +368,15 @@ export function isRoutine(m: MessageLike): boolean {
 export function contentFormat(m: MessageLike): 'markdown' | 'html' {
   const f = str(asMeta(m).contentFormat);
   if (f === 'markdown' || f === 'html') return f;
-  // Unmarked: the composer writes HTML, so markup means HTML, and its absence
-  // is safe through the markdown path (plain text is valid markdown).
-  return /<[a-z][\s\S]*>/i.test(m.content ?? '') ? 'html' : 'markdown';
+  // Anything this app wrote is markdown by construction — `tagUpdate` builds it
+  // — and saying so beats sniffing our own output. Without this, a mirrored
+  // email quoting `<someone@example.com>` was read as HTML and its **bold** and
+  // [links](…) rendered to the reader verbatim.
+  if (/^<!--\s*app:/i.test(m.content ?? '') || /^\[app:/i.test(m.content ?? '')) return 'markdown';
+  // Unmarked: the composer writes HTML, so real markup means HTML. The pattern
+  // requires a plausible TAG — `<p>`, `</div>`, `<a href=…>` — because the loose
+  // version treated any angle-bracketed address as markup.
+  return /<\/?[a-z][a-z0-9]*(?:\s[^<>]*)?>/i.test(m.content ?? '') ? 'html' : 'markdown';
 }
 
 /**

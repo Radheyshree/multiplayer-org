@@ -12,14 +12,13 @@
  * thread is reserved for state that changes.
  */
 import type { Source } from '../../lib/provenance';
+import { SurfaceIcon } from './SurfaceIcon';
 import { c, mono } from '../../lib/theme';
 
 export function SourceBadge({ source, title }: { source: Source; title?: string }) {
   const inner = (
     <>
-      <span aria-hidden style={{ opacity: 0.75 }}>
-        {source.glyph}
-      </span>
+      <SurfaceIcon source={source} size={11} />
       <span>{source.label}</span>
       {source.detail ? (
         <span className="truncate" style={{ color: c.mute, maxWidth: '11rem' }}>

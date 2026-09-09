@@ -40,6 +40,7 @@ import {
 import { hasToken } from './lib/xyne';
 import { configureOrigins } from './lib/origin';
 import { recallOrigins } from './lib/mailthread';
+import { recallCandidates } from './lib/mailbridge';
 import { loadRegistry, type Registry } from './lib/apps';
 import type { WorkItem } from './lib/workitem';
 import { ORG_APPS } from './orgApps/registry';
@@ -266,6 +267,9 @@ export default function App(): JSX.Element {
         configureOrigins({ myEmail: user?.email ?? null });
         // What a previous session learned about this workspace's Zoho URLs.
         void recallOrigins();
+        // And which desk mails are code-host notifications, so the first ticket
+        // opened does not wait 19 seconds to find out. See lib/mailbridge.ts.
+        void recallCandidates();
         setTrees(tree);
         setAgents(ag);
         void listAgents().then(setAgentOptions).catch(() => setAgentOptions([]));
@@ -1112,6 +1116,7 @@ npm run dev`}
           messages={thread as unknown as LedgerMessage[]}
           channel={track}
           {...(me?.id ? { meId: me.id } : {})}
+          {...(me?.email ? { meEmail: me.email } : {})}
           agents={agentOptions}
           busy={busy}
           {...(ticket?.description ? { description: ticket.description } : {})}

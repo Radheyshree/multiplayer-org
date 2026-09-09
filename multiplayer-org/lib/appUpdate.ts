@@ -24,11 +24,42 @@
 
 export type EntryKind = 'activity' | 'note';
 
-const MARKER = /^\[app:([a-z0-9-]{1,40})(?:\|(activity|note))?\]\s*/i;
+/**
+ * The marker, in both shapes.
+ *
+ * WHAT CHANGED AND WHY. The original form was a literal `[app:github|note]`
+ * prefix, which this app strips before rendering — but Xyne's own dashboard does
+ * not know to strip it, so anyone reading the ticket in Spaces saw
+ *
+ *   [app:xyne-desk|note|bridge:cmttq5p944ptj4ic02qez3sxq.cmttq535c3dyf6fs6zi2qu5gx] Mail thread linked — …
+ *
+ * with the machinery in front of the sentence. Writing it as an HTML comment
+ * fixes that everywhere at once: every HTML renderer hides it, including Xyne's,
+ * and it survives the round trip byte-for-byte (verified against a live
+ * conversation — the server stores `content` untouched, comment and all).
+ *
+ * BOTH FORMS PARSE. Entries written before this change are still in real
+ * tickets, and they must keep their badges.
+ */
+const MARKER =
+  /^(?:<!--\s*app:([a-z0-9-]{1,40})(?:\|(activity|note))?(?:\|([a-z0-9:._-]{1,80}))?\s*-->|\[app:([a-z0-9-]{1,40})(?:\|(activity|note))?(?:\|([a-z0-9:._-]{1,80}))?\])\s*/i;
 
-/** Wrap an app's entry so the ledger can attribute and layer it. */
-export function tagUpdate(appId: string, body: string, kind: EntryKind = 'note'): string {
-  return `[app:${appId}|${kind}] ${body}`;
+/**
+ * Wrap an app's entry so the ledger can attribute and layer it.
+ *
+ * `ref` is an OPTIONAL idempotency key — the id of the outside thing this entry
+ * mirrors, e.g. `mail:1a084adf0b1a066c` for a specific email. It exists because
+ * mirroring is a repeated operation: the mail bridge re-reads a desk thread
+ * every time a ticket is opened, and without a stable key on the line it wrote
+ * last time it cannot tell "already copied" from "new". Comparing subjects and
+ * timestamps instead would double a line the moment either changed.
+ *
+ * It lives in the marker rather than in metadata for the same reason everything
+ * else does — the server hardcodes `messages.metadata` to null on write — and it
+ * is stripped along with the marker, so no reader ever sees it.
+ */
+export function tagUpdate(appId: string, body: string, kind: EntryKind = 'note', ref?: string): string {
+  return `<!--app:${appId}|${kind}${ref ? `|${ref}` : ''}-->${body}`;
 }
 
 export interface ParsedUpdate {
@@ -38,17 +69,25 @@ export interface ParsedUpdate {
   kind: EntryKind;
   /** The entry with the marker stripped. */
   body: string;
+  /** The outside thing this entry mirrors, when it was written with one. */
+  ref?: string;
 }
 
 export function parseUpdate(content: string): ParsedUpdate {
   const m = MARKER.exec(content);
   if (!m) return { appId: null, kind: 'note', body: content };
+  // Groups 1-3 are the comment form, 4-6 the legacy bracket form.
+  const appId = m[1] ?? m[4];
+  const kind = m[2] ?? m[5];
+  const ref = m[3] ?? m[6];
+  if (!appId) return { appId: null, kind: 'note', body: content };
   return {
-    appId: m[1]!.toLowerCase(),
+    appId: appId.toLowerCase(),
     // Entries written before kinds existed are notes, which is the safe default:
     // they show by default rather than hiding in a collapsed layer.
-    kind: (m[2]?.toLowerCase() as EntryKind | undefined) ?? 'note',
+    kind: (kind?.toLowerCase() as EntryKind | undefined) ?? 'note',
     body: content.slice(m[0].length),
+    ...(ref ? { ref: ref.toLowerCase() } : {}),
   };
 }
 

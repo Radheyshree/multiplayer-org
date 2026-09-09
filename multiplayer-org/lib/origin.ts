@@ -129,6 +129,15 @@ const CONSUMER_MAIL = new Set([
 const BOUNCE_SENDERS = new Set(['mailer-daemon', 'postmaster', 'bounce', 'bounces']);
 
 /**
+ * Is this address a mail server reporting on delivery?
+ *
+ * Used for more than the badge: a reply must never be addressed to the daemon
+ * that told you the last one failed.
+ */
+export const isBounce = (address: string | undefined | null): boolean =>
+  BOUNCE_SENDERS.has((address ?? '').toLowerCase().split('@')[0] ?? '');
+
+/**
  * Name the system behind a URL.
  *
  * Host-based rather than assumed. This workspace's PRs are on Bitbucket, but

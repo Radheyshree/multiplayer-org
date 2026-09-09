@@ -30,10 +30,12 @@ company the writer works for, and opens that product in one click.**
 Live, on `XYNE-63024`:
 
 ```
-ACROSS SURFACES   ⑂ Bitbucket 2 ↗   ✉ Zoho Desk 2 ↗   ⑂ GitHub 1 ↗   ◉ Call 1 ↗   ◇ Xyne 8
+ACROSS SURFACES   ⑂ Bitbucket 6 ↗   ✉ Zoho Desk 2 ↗   ⑂ GitHub 1 ↗   ☎ Call 1 ↗   ◇ Xyne 9
 ```
 
-Four products that are not Xyne, on one ticket, each chip a link out.
+Four products that are not Xyne, on one ticket, each chip a link out. The icons
+are real ones rather than text marks, because a badge on every row is something
+people scan rather than read.
 
 And on `XYNE-1371`, an ordinary support ticket that nobody prepared:
 
@@ -94,7 +96,7 @@ So the system is named from evidence that is actually on the row, in this order:
 
 ---
 
-## The five ways data reaches a ticket
+## The six ways data reaches a ticket
 
 ### 1. An adapter ingests it — Zoho, Gmail, Outlook, Slack, Ozonetel
 
@@ -142,7 +144,69 @@ list method; references only come back joined onto `getDetails`.
 `search.query` groups by `docType`, and the group value *is* the badge. Mail hits
 carry `senderEmail`, which is enough to mark the counterparty before you click.
 
-### 5. Our surfaces record — a message in the thread
+### 5. A mail bridge — a notification ticket joined to the work ticket
+
+Bitbucket emails you when something happens on a pull request. On a Desk channel
+that mail becomes a ticket of its own, and the work the PR is *for* has a
+different ticket on a different board. Two tickets, same work, nothing joining
+them. Real pair from this workspace:
+
+```
+XYNE-63043  "XYNE/xyne-spaces - Pull request #9604: feat: XYNE-63024 …"
+            from  Juspay Bitbucket <bitbucket-no-reply@juspay.email>
+            body  …/projects/XYNE/repos/xyne-spaces/pull-requests/9604
+XYNE-63024  "Multiplayer demo — one surface for cross-surface work"
+```
+
+**Everything needed to join them is already in the mail.** The subject names the
+repository and the PR number, the PR title contains the work ticket's key, and
+the body carries the PR's URL. So the link is *read off the row* rather than
+declared by a person — `lib/mailbridge.ts`.
+
+Once linked, mail flows on its own: every message on that desk thread is mirrored
+into the work ticket's conversation, badged **via Bitbucket ↗**, exactly once.
+Replies you send from anywhere come back the same way.
+
+Three things that turned out to matter:
+
+- **`search.query` cannot find it.** A desk created minutes ago is not in the
+  index, and new mail is the entire point. Searching for the exact key returned
+  eight unrelated bounce notifications and not the mail whose subject contains
+  it. So the bridge scans desk channels directly — `channels.listAll()` filtered
+  to `type === 'EMAIL'`, because `channels.listEmail()` returns 209 read-state
+  rows of which 198 are not desks. The scan is 19s cold, so it never blocks:
+  results are cached in global storage and a linked ticket does not need it at
+  all.
+- **Idempotency needs a key on the line.** Each mirrored entry carries the
+  email's provider id in its marker (`mail:1a084adf0b1a066c`), so re-syncing is
+  an exact-match question. The bridge line carries the desk's conversation and
+  channel ids, which makes a linked thread self-describing: sync runs from the
+  ticket's own messages, with no index and no cache.
+- **`CVE-2024` looks exactly like a ticket key** and appears three times in the
+  body of the very mail this was built for, inside Bitbucket's own "JIRA Ticket
+  Usage" block.
+
+### Replying from the ticket
+
+`POST /api/email/:conversationId/reply` — the endpoint the Desk UI uses. Not on
+the SDK (`email.d.ts`: "Sending mail is not exposed here"), but an ordinary
+`/api/` path, so the app's fetch tunnel carries it and the host performs it as
+the signed-in viewer. Verified: an empty body returns
+`400 Body or at least one attachment is required` — validation, not auth.
+
+It does **not** compute recipients. `type: REPLY_ALL` only decides how the
+original is quoted; without a `to` array it answers `400 Recipients required`.
+So `replyRecipients()` does that work: the newest inbound message's sender plus
+everyone it was addressed to, minus us — and minus bounce daemons, which is not
+theoretical. The first real reply went to `bitbucket-no-reply@juspay.email`,
+bounced, and `mailer-daemon@googlemail.com` became the newest inbound mail on the
+thread. Without that filter the next reply would have been addressed to the
+server reporting that the last one failed.
+
+The reply box names its recipients before you send, and says so when the only
+one is a no-reply address.
+
+### 6. Our surfaces record — a message in the thread
 
 **Linking writes a message into the ticket's own conversation.** No separate
 link table, no hidden app state.
@@ -153,9 +217,16 @@ link table, no hidden app state.
   · https://desk.zoho.com/support/juspay4/ShowHomePage.do#Cases/dv/458844000296724694
 ```
 
-`[app:xyne-desk|note]` is stripped before display and becomes the **via Zoho
-Desk ↗** chip. The marker rides in the body because the server hardcodes
-`messages.metadata` to `null` on write.
+The marker rides in the body because the server hardcodes `messages.metadata` to
+`null` on write. It is written as an **HTML comment** —
+`<!--app:xyne-desk|note|mail:1a084adf0b1a066c-->` — so every renderer hides it,
+including Xyne's own. The first version used a literal `[app:…]` prefix, which
+this app stripped and the Spaces dashboard did not, so anyone reading the ticket
+in Xyne saw the machinery in front of the sentence. Both forms still parse:
+entries written before the change are in real tickets and keep their badges.
+
+The marker becomes the **via Zoho Desk ↗** chip, and its optional third field is
+an idempotency key — the id of the outside thing the entry mirrors.
 
 That is underwhelming until you notice what it buys: the link is visible in Xyne
 itself, it outlives this app, any agent asked about the ticket reads it, and it
@@ -293,6 +364,8 @@ this app renders it as **via Bitbucket ↗** with no further change.
 | `lib/mailthread.ts` | the email side of a ticket — participants, provider, Zoho link, and the learned URL shape |
 | `lib/provenance.ts` | resolves a message to its source; the ordering and why each badge is allowed |
 | `lib/related.ts` | the seed builder, and `resolveOutbound` — recovering a link the index dropped |
+| `lib/mailbridge.ts` | joining a code-host notification ticket to the work ticket, mirroring its mail, and replying to it |
 | `components/ledger/Surfaces.tsx` | the "across surfaces" strip and what counts as outside |
+| `components/ledger/SurfaceIcon.tsx` | which icon each system gets, and why not brand logos |
 | `components/ledger/MessageRow.tsx` | the row, and the grouping rule that keeps badges visible |
 | `patches/README.md` | the PR-comment bug, in full, with the fix |
