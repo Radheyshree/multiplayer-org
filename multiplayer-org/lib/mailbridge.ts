@@ -671,9 +671,21 @@ export function knownCandidates(): Candidate[] {
 /**
  * Persist the index so the next session starts warm.
  *
- * Global scope: which desk mails are code-host notifications is a fact about the
- * workspace, not about one person, and the first colleague to pay for the scan
- * should be the last.
+ * USER SCOPE, NOT GLOBAL — and the reason matters.
+ *
+ * An earlier version wrote this globally, reasoning that "which desk mails are
+ * code-host notifications is a fact about the workspace, so the first colleague
+ * to pay for the scan should be the last". Both halves of that are wrong.
+ *
+ * It is not a fact about the workspace. The scan reads the desks the VIEWER can
+ * see, so the index is a fact about one person's access. Sharing it leaks the
+ * subject lines and desk ticket ids of every mail in their personal inbox to
+ * everyone else using the app.
+ *
+ * And it breaks the feature it was meant to speed up. A colleague opening a
+ * ticket would load somebody else's index, find it inside the TTL, skip their
+ * own scan entirely — and never be offered the mail sitting in their own desk,
+ * which is exactly the case this is for.
  */
 async function remember(rows: Candidate[]): Promise<void> {
   const { storage, storageReady } = await import('./xyne');
@@ -681,7 +693,7 @@ async function remember(rows: Candidate[]): Promise<void> {
   try {
     await storage
       .collection<{ at: number; rows: Candidate[] }>(INDEX_COLLECTION)
-      .put(INDEX_KEY, { at: Date.now(), rows: rows.slice(0, 200) }, { scope: 'global' });
+      .put(INDEX_KEY, { at: Date.now(), rows: rows.slice(0, 200) });
   } catch {
     /* a warm start is a nicety */
   }
@@ -693,9 +705,11 @@ export async function recallCandidates(): Promise<void> {
   const { storage, storageReady } = await import('./xyne');
   if (!storageReady) return;
   try {
+    // Default scope is 'user' (private) — see `remember` for why that is
+    // load-bearing rather than incidental.
     const rec = (await storage
       .collection(INDEX_COLLECTION)
-      .get(INDEX_KEY, { scope: 'global' })) as { value?: { at?: number; rows?: Candidate[] } } | null;
+      .get(INDEX_KEY)) as { value?: { at?: number; rows?: Candidate[] } } | null;
     const rows = rec?.value?.rows;
     // Stamped with the STORED time, not now: a recalled index is already old, so
     // the next request for it triggers a refresh rather than resetting the TTL

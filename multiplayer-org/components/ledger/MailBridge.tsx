@@ -122,11 +122,15 @@ export function MailBridge({
       {linked.length > 0 ? (
         <div className="flex items-center gap-2 py-0.5">
           <span style={{ ...eyebrow, fontSize: '9px', color: c.graphite }}>mail thread</span>
+          {/* Short enough not to truncate. The long version ("4 threads linked
+              — new mail appears here on its own.") clipped to "new mail …" in
+              this pane, which reads as a broken sentence rather than as
+              reassurance. */}
           <span className="min-w-0 flex-1 truncate text-[11px]" style={{ color: c.mute }}>
-            {linked.length === 1
-              ? 'Linked — new mail appears here on its own.'
-              : `${linked.length} threads linked — new mail appears here on its own.`}
-            {note ? ` ${note}` : ''}
+            {note ??
+              (linked.length === 1
+                ? '1 thread · new mail arrives on its own'
+                : `${linked.length} threads · new mail arrives on its own`)}
           </span>
           <button
             onClick={() => void onSync()}
