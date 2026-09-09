@@ -163,6 +163,44 @@ repository and the PR number, the PR title contains the work ticket's key, and
 the body carries the PR's URL. So the link is *read off the row* rather than
 declared by a person — `lib/mailbridge.ts`.
 
+An ordinary email counts too. `readMailLink` recognises two kinds:
+
+| kind | evidence | example |
+|---|---|---|
+| `notification` | a known robot **and** a pull-request URL | `XYNE/xyne-spaces - Pull request #9604: feat: XYNE-63024 …` |
+| `mention` | a ticket key in the **subject** | `XYNE-63073 checking` |
+
+Two things make the weak `mention` case safe, and they were chosen against a
+measurement rather than a feeling. Over 23 real emails on a seven-day personal
+inbox:
+
+- **subject-only matching: 5 hits, 0 false positives.**
+- **body matching would have added 10 more mails**, on keys like `TS-26`
+  (TechSparks 2026, in eight different newsletters), `GPT-6`, `EOS-05`,
+  `MOP-204`. A 43% false-positive rate.
+
+And the match runs *backwards*: detection never resolves the keys it finds —
+`candidatesFor` compares them against the key of the ticket you have **open**. A
+stray `WFH-2026` in a subject can therefore only ever surface on a ticket called
+WFH-2026, and it costs no lookup per candidate.
+
+Not required: that the sender be a colleague. A vendor putting your ticket key in
+a subject is exactly the cross-company case this app is for.
+
+### Why not an email alias instead
+
+Xyne does support emailing into Spaces, but only at channel granularity.
+`channelEmailAliasService.getChannelEmailAlias` mints
+
+```
+<localPart>+ch_<channelId>@<domain>
+```
+
+and `extractChannelIdFromRecipients` routes inbound mail by that sub-address. The
+id in it is a **channel** id — there is no per-ticket or per-conversation
+address, so an alias gets a mail into the right channel and no further. Ticket-
+level targeting has to come from the content, which is what `mention` does.
+
 Once linked, mail flows on its own: every message on that desk thread is mirrored
 into the work ticket's conversation, badged **via Bitbucket ↗**, exactly once.
 Replies you send from anywhere come back the same way.

@@ -84,10 +84,18 @@ export function MailBridge({
     >
       {offered.map(cand => (
         <div key={cand.desk.id} className="flex items-center gap-2 py-0.5">
-          <span style={{ ...eyebrow, fontSize: '9px', color: c.attention }}>mail found</span>
+          <span style={{ ...eyebrow, fontSize: '9px', color: c.attention }}>
+            {cand.notification.kind === 'mention' ? 'mail names this' : 'mail found'}
+          </span>
           <span className="min-w-0 flex-1 truncate text-[11.5px]" style={{ color: c.text }}>
-            {cand.notification.system.name}
-            {cand.notification.prNumber ? ` PR #${cand.notification.prNumber}` : ''}
+            {/* A robot notification leads with its system and PR — that is the
+                interesting part. A person's mail leads with its subject, because
+                "who wrote what" is what decides whether you want it linked. */}
+            {cand.notification.kind === 'mention'
+              ? (cand.desk.title ?? 'Email')
+              : `${cand.notification.system?.name ?? 'Email'}${
+                  cand.notification.prNumber ? ` PR #${cand.notification.prNumber}` : ''
+                }`}
             {cand.desk.xyneId ? ` · ${cand.desk.xyneId}` : ''}
             {cand.notification.repo ? ` · ${cand.notification.repo}` : ''}
           </span>

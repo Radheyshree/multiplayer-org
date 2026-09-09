@@ -47,17 +47,40 @@ import { xyne } from './xyne';
 import { parseUpdate, tagUpdate } from './appUpdate';
 import { counterparty, isBounce, systemFromUrl, type ExternalSystem } from './origin';
 
-/** What a code-host notification email turned out to be about. */
-export interface Notification {
+/**
+ * How an email came to be about a ticket.
+ *
+ * `notification` — a robot announced a repository event. Strong signal: the
+ *   sender is a known robot AND the mail carries a pull-request URL, so both the
+ *   subject that names the ticket and the link back out are machine-generated.
+ *
+ * `mention` — a person wrote an email and named a ticket in it. Weaker by
+ *   construction: there is no URL, no robot, and no schema — only a string that
+ *   looks like a key. Everything that makes this safe is in `readMailLink`.
+ */
+export type LinkKind = 'notification' | 'mention';
+
+/** What an email turned out to be about. */
+export interface MailLink {
+  kind: LinkKind;
   /** Bitbucket, GitHub, … — named from the URL in the body, never assumed. */
-  system: ExternalSystem;
+  system?: ExternalSystem;
   /** `XYNE/xyne-spaces`, `juspay/xyne-spaces`. */
   repo?: string;
   prNumber?: number;
   prUrl?: string;
   /** Work-ticket keys named in the mail, most likely first. */
   ticketKeys: string[];
+  /**
+   * Where the keys were found. `subject` is somebody putting a key on a mail on
+   * purpose; `body` is a key that happened to appear in the text, which on a
+   * real inbox is mostly quoted digests and identifiers that merely look alike.
+   */
+  where: 'subject' | 'body';
 }
+
+/** @deprecated The notification-shaped subset. Kept so old call sites read the same. */
+export type Notification = MailLink;
 
 /**
  * Enough to re-read a desk thread later, with no index and no extra lookups.
@@ -172,12 +195,51 @@ export function readNotification(
   );
 
   return {
+    kind: 'notification',
     system,
     prUrl,
     ...(repo ? { repo } : {}),
     ...(prNumber ? { prNumber } : {}),
     ticketKeys,
+    where: keysIn(subject).length ? 'subject' : 'body',
   };
+}
+
+/**
+ * Read any link between an email and a ticket — robot notification or not.
+ *
+ * The notification path (above) is the strong one: a known robot, a
+ * pull-request URL, and a machine-generated subject. This is the weak one, and
+ * the question is how to make "an email that names a ticket" safe when the only
+ * evidence is a string that looks like a key.
+ *
+ * THE SUBJECT ONLY. A key in a subject line is somebody putting it there on
+ * purpose. A key in a body is usually not: on a real seven-day inbox the bodies
+ * are newsletters, build digests and footers full of identifiers shaped exactly
+ * like ticket keys, and the mail this whole feature was built for contains
+ * `CVE-2024` three times in Bitbucket's own boilerplate.
+ *
+ * AND THE MATCH RUNS THE OTHER WAY. This does not resolve the keys it finds —
+ * `candidatesFor` compares them against the key of the ticket you have OPEN.
+ * That inverts the risk: a spurious key only ever surfaces if it is character-
+ * for-character the ticket you are looking at, so a stray `WFH-2026` in some
+ * subject line can only appear on a ticket called WFH-2026. It also costs
+ * nothing — no lookup per candidate, no resolution pass over the whole desk.
+ *
+ * What is deliberately NOT required: that the sender be a colleague. A vendor
+ * putting your ticket key in a subject is exactly the cross-company case this
+ * app exists for, and a same-domain rule would throw it away.
+ */
+export function readMailLink(
+  mail: { subject?: string; body?: string; from?: string },
+  selfKey?: string,
+): MailLink | null {
+  const notification = readNotification(mail, selfKey);
+  if (notification) return notification;
+
+  const keys = keysIn(mail.subject ?? '').filter((k, i, all) => all.indexOf(k) === i && k !== selfKey);
+  if (keys.length === 0) return null;
+  return { kind: 'mention', ticketKeys: keys, where: 'subject' };
 }
 
 function keysIn(text: string): string[] {
@@ -209,9 +271,9 @@ export function describeMail(
   const org = isRobot(mail.from) ? null : counterparty(who);
   const attribution = mail.sentByUserId ? 'sent by you' : `from ${who}${org ? ` (${org})` : ''}`;
   const link =
-    n?.prUrl && n.prNumber
+    n?.prUrl && n.prNumber && n.system
       ? `[${n.system.name} PR #${n.prNumber}](${n.prUrl})`
-      : n?.prUrl
+      : n?.prUrl && n.system
         ? `[${n.system.name}](${n.prUrl})`
         : '';
   const snippet = summarise(mail.body ?? '');
@@ -424,13 +486,13 @@ export async function bridge(b: Bridge): Promise<{ referenced: boolean; noted: b
   const existing = await listThread(b.work.conversationId);
   if (mirroredRefsFor(existing, ref)) return { referenced, noted: false };
 
-  const where = n.prNumber ? `${n.system.name} PR #${n.prNumber}` : n.system.name;
+  const where = n.prNumber && n.system ? `${n.system.name} PR #${n.prNumber}` : (n.system?.name ?? 'Email');
   await spaces.messages.send({
     conversationId: b.work.conversationId,
     content: tagUpdate(
       'xyne-desk',
       `Mail thread linked — **${b.desk.title ?? 'notification'}**\n` +
-        `[${where}](${n.prUrl})${b.desk.xyneId ? ` · desk ticket ${b.desk.xyneId}` : ''}` +
+        `${n.prUrl ? `[${where}](${n.prUrl})` : where}${b.desk.xyneId ? ` · desk ticket ${b.desk.xyneId}` : ''}` +
         `\nNew mail on this thread now appears here.`,
       'note',
       ref,
@@ -529,7 +591,7 @@ async function scanDesks(): Promise<Candidate[]> {
         for (const tk of Array.isArray(tickets) ? tickets : []) {
           if (!tk.conversationId) continue;
           for (const mail of tk.emails ?? []) {
-            const notification = readNotification(mail, tk.xyneId);
+            const notification = readMailLink(mail, tk.xyneId);
             if (!notification) continue;
             rows.push({
               desk: {
