@@ -31,7 +31,7 @@ import {
   type AgentOption,
   type AgentRun,
 } from '../../lib/agentrun';
-import { nameOf, resolveProfiles } from '../../lib/people';
+import { nameOf, personOf, resolveProfiles } from '../../lib/people';
 import {
   afterRun,
   afterSkip,
@@ -55,6 +55,24 @@ import { Related } from './Related';
 import { Surfaces } from './Surfaces';
 import { learnFrom, loadMailThread, type MailThread } from '../../lib/mailthread';
 import { MailBridge } from './MailBridge';
+import { UpdateAgent } from './UpdateAgent';
+import {
+  applySuggestion,
+  askText,
+  detect,
+  dismiss,
+  enrich,
+  factsFor,
+  investigatePrompt,
+  isDismissed,
+  readNudgeState,
+  SNOOZE_MS,
+  type Nudge,
+  type Suggestion,
+  type ThreadMessage,
+  type TicketRow,
+} from '../../lib/nudge';
+import { mentionHtml } from '../../lib/mentions';
 import {
   bridge as makeBridge,
   bridgesInThread,
@@ -96,6 +114,7 @@ export function Ledger({
   description,
   onSend,
   onRecord,
+  onRecordFrom,
   onRefresh,
 }: {
   item: WorkItem | null;
@@ -117,6 +136,17 @@ export function Ledger({
    * would appear under the asker's name, which is worse than not showing it.
    */
   onRecord?: (text: string, kind: 'activity' | 'note') => Promise<void>;
+  /**
+   * Record something attributed to a NAMED surface rather than to whichever app
+   * tab happens to be open.
+   *
+   * `onRecord` stamps the open app, which is right for "the board moved a card"
+   * and wrong for the update agent — its entries are the shell's, not the Kanban
+   * board's, and a ledger that credits them to whatever tab was open would be
+   * lying about where they came from. The shell still owns the target; only the
+   * attribution is named here.
+   */
+  onRecordFrom?: (appId: string, text: string, kind: 'activity' | 'note') => Promise<void>;
   onRefresh: () => void | Promise<void>;
 }) {
   const [tab, setTab] = useState<'thread' | 'related'>('thread');
@@ -149,6 +179,16 @@ export function Ledger({
   const [syncNote, setSyncNote] = useState<string | null>(null);
   /** The address anyone can email to reach this track. */
   const [alias, setAlias] = useState<string | null>(null);
+  /**
+   * What the update agent has noticed about this ticket, if anything.
+   *
+   * Recomputed when the thread changes, because the thread is half the evidence
+   * — answering the question the agent is nagging about should make the nag go
+   * away without a reload.
+   */
+  const [nudge, setNudge] = useState<Nudge | null>(null);
+  const [nudgeBusy, setNudgeBusy] = useState<string | null>(null);
+  const [nudgeNote, setNudgeNote] = useState<string | null>(null);
   /** Desk threads already synced this mount, so the poll does not re-sync. */
   const synced = useRef(new Set<string>());
   const endRef = useRef<HTMLDivElement>(null);
@@ -157,6 +197,8 @@ export function Ledger({
   const waking = useRef(false);
   /** The freshest thread, for reads inside async work that outlives a render. */
   const latest = useRef<LedgerMessage[]>([]);
+  /** The open ticket's full row, read once so the poll does not re-read it. */
+  const ticketRow = useRef<TicketRow | null>(null);
 
   const agent = agents.find(a => a.slug === agentSlug) ?? defaultAgent(agents);
 
@@ -187,7 +229,11 @@ export function Ledger({
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: 'end' });
-  }, [messages.length, runs.length]);
+    // `nudge?.key` is in here on purpose: the update agent's turn renders after
+    // the last message, so a card that appears without this sits below the fold
+    // on any thread long enough to scroll — which is every thread it has
+    // something to say about.
+  }, [messages.length, runs.length, nudge?.key]);
 
   // Runs belong to the ticket that started them.
   useEffect(() => {
@@ -401,6 +447,150 @@ export function Ledger({
       }
     })();
   }, [item, watch, messages, agents, agent, asking, onRefresh, onRecord, runAgent]);
+
+  /**
+   * The update agent's pass over this ticket.
+   *
+   * Deliberately runs on the THREAD changing rather than only on open: the whole
+   * point of a nudge is that it goes away when it has been answered, and having
+   * to reload to stop being asked would be worse than not being asked at all.
+   *
+   * It is also cheap enough to do that. The thread is already in memory, the
+   * board's stages are cached per board, and the only new request is the ticket's
+   * activity log — which is where the pull-request verdict lives and is the one
+   * thing the ledger does not already hold.
+   */
+  useEffect(() => {
+    if (!item) {
+      setNudge(null);
+      return;
+    }
+    let live = true;
+    void (async () => {
+      try {
+        // The board id, creator and ETA are not on a WorkItem, so the ticket has
+        // to be read once — but only once per ticket, not once per poll. The
+        // thread changing is what re-runs the rules; the ticket record changing
+        // is not something this effect is watching for.
+        if (ticketRow.current?.id !== item.id) {
+          ticketRow.current = await enrich({
+            id: item.id,
+            xyneId: item.xyneId,
+            title: item.title,
+            statusV2: item.statusV2,
+            channelId: item.channelId,
+            conversationId: item.conversationId,
+          });
+        }
+        const facts = await factsFor(ticketRow.current, messages as unknown as ThreadMessage[]);
+        if (!live) return;
+        const found = facts ? detect(facts) : null;
+        // A finding somebody has already waved away must not come back on the
+        // next poll. Checked here rather than inside `detect` so the rules stay
+        // pure and testable without storage.
+        if (found) {
+          const state = await readNudgeState(found.ticketId);
+          if (live) setNudge(isDismissed(state, found) ? null : found);
+        } else {
+          setNudge(null);
+        }
+      } catch {
+        // A ticket whose activity log will not load is a ticket with no nudge,
+        // never a ticket that fails to open.
+        if (live) setNudge(null);
+      }
+    })();
+    return () => {
+      live = false;
+    };
+  }, [item?.id, messages]);
+
+  /** Hand the finding to the agent and let it read the ticket properly. */
+  const investigate = useCallback(async (): Promise<void> => {
+    if (!item || !nudge || !agent) return;
+    setNudgeBusy('investigate');
+    try {
+      const ownerName = nudge.ownerId ? personOf(nudge.ownerId).name : 'whoever owns it';
+      const { task, context } = investigatePrompt(nudge, ownerName);
+      await runAgent(agent.slug, agent.name, `${task}\n\n${context}`);
+    } finally {
+      setNudgeBusy(null);
+    }
+  }, [item, nudge, agent, runAgent]);
+
+  /**
+   * Take the suggestion.
+   *
+   * Two writes, in this order and never one without the other: the change
+   * itself, then a line in the thread saying what changed and that the update
+   * agent proposed it. The record is the part that matters in three months —
+   * a ticket that silently became Completed tells the next reader nothing about
+   * why, and "an agent suggested it and a person agreed" is exactly the thing
+   * they will want to know.
+   */
+  const accept = useCallback(
+    async (s: Suggestion): Promise<void> => {
+      if (!item || !nudge) return;
+      setNudgeBusy(s.label);
+      setNudgeNote(null);
+      try {
+        // `reply` and `ask` change nothing on the ticket, so they short-circuit
+        // before the shared write path rather than passing through it doing
+        // nothing — the record line below must only ever describe a real change.
+        if (s.kind === 'reply') {
+          setNudgeNote('Say it in the box below — it goes on the ticket.');
+          setNudgeBusy(null);
+          return;
+        }
+        if (s.kind === 'ask') {
+          setNudgeBusy(null);
+          await investigate();
+          return;
+        }
+        const recorded = await applySuggestion(nudge, s);
+        if (!recorded) {
+          setNudgeBusy(null);
+          return;
+        }
+        await onRecordFrom?.('update-agent', recorded, 'activity');
+        await onRefresh();
+        setNudge(null);
+        setNudgeNote(`${s.label} — done.`);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setNudgeBusy(null);
+      }
+    },
+    [item, nudge, onRecordFrom, onRefresh, investigate],
+  );
+
+  /**
+   * Ask the person who owes the update, by name, in the thread.
+   *
+   * A REAL mention span, not the text "@Name" — the backend parses these out of
+   * `content` on send, adds the person to the conversation and notifies them.
+   * That is the whole delivery mechanism: without it the nudge only works on
+   * somebody who was already looking at the ticket, which is precisely the
+   * person who does not need it.
+   */
+  const askOwner = useCallback(async (): Promise<void> => {
+    if (!item || !nudge?.ownerId) return;
+    setNudgeBusy('ask');
+    setNudgeNote(null);
+    try {
+      const person = personOf(nudge.ownerId);
+      const mention = mentionHtml({ userId: person.id, name: person.name });
+      await onRecordFrom?.('update-agent', `${mention} ${askText(nudge)}`, 'note');
+      await onRefresh();
+      setNudgeNote(`Asked ${person.name} on the ticket.`);
+      setNudge(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setNudgeBusy(null);
+    }
+  }, [item, nudge, onRecordFrom, onRefresh]);
 
   /**
    * Learn how this deployment writes Zoho URLs, from any message that carries
@@ -655,6 +845,30 @@ export function Ledger({
                 />
               ))
             )}
+
+            {/* The update agent's turn.
+                Last in the thread, above the composer, because it is the most
+                recent thing anyone said about this ticket and because the reply
+                to it is the box directly below. */}
+            <UpdateAgent
+              nudge={nudge}
+              {...(meId ? { meId } : {})}
+              busy={nudgeBusy}
+              note={nudgeNote}
+              onAccept={accept}
+              onAsk={askOwner}
+              onInvestigate={investigate}
+              onSnooze={async () => {
+                if (!nudge) return;
+                await dismiss(nudge.ticketId, nudge.key, SNOOZE_MS, meId);
+                setNudge(null);
+              }}
+              onDismiss={async () => {
+                if (!nudge) return;
+                await dismiss(nudge.ticketId, nudge.key, 0, meId);
+                setNudge(null);
+              }}
+            />
 
             {/* Runs this session started. They sit after the thread because
                 that is when they happened; once the agent's reply lands as a

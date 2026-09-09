@@ -20,9 +20,7 @@ import {
   askAgent,
   loadAgents,
   pickUpdateAgent,
-  loadMyTickets,
   postToTicket,
-  staleDays,
   loadInsights,
   loadMe,
   loadProjectTrees,
@@ -62,6 +60,8 @@ const Studio = lazy(() =>
 import { tagUpdate, parseUpdate, matchesLayer, type Layer } from './lib/appUpdate';
 import { readHistory, recordVisit, clearHistory, type RecentEntry } from './lib/history';
 import { Rail, type RailView } from './components/Rail';
+import { UpdateQueue } from './components/UpdateQueue';
+import { myTickets as loadMyWork } from './lib/tickets';
 import {
   loadDirectory, EMPTY_DIRECTORY, humanize, ago, initials,
   priorityTone, statusTone, type Directory,
@@ -182,13 +182,18 @@ export default function App(): JSX.Element {
   const [actionError, setActionError] = useState<string | null>(null);
   const [updateAsk, setUpdateAsk] = useState('');
   const [updateSent, setUpdateSent] = useState<string | null>(null);
-  const [myTickets, setMyTickets] = useState<Ticket[]>([]);
+  /**
+   * Everything the update agent scans.
+   *
+   * NOT `loadMyTickets`, which this replaced: that filters on `assignedTo`, and
+   * in this workspace only 21 of 81 tickets have an assignee at all — so a queue
+   * built from it would miss three quarters of the work, including almost every
+   * stale one. `listKanban`'s `my-tickets` view returns what you are actually
+   * involved in, assigned or not, in one call rather than one per project.
+   */
+  const [queueTickets, setQueueTickets] = useState<Ticket[]>([]);
   /** The workspace's own app registry, read lazily when the store is opened. */
   const [registry, setRegistry] = useState<Registry | null>(null);
-  /** Inline replies in the Update Agent pane, keyed by ticket id. */
-  const [replies, setReplies] = useState<Record<string, string>>({});
-  const [replied, setReplied] = useState<Record<string, boolean>>({});
-  const [replying, setReplying] = useState<string | null>(null);
 
   const channelsById = useMemo(() => {
     const m = new Map<string, Channel>();
@@ -419,9 +424,9 @@ export default function App(): JSX.Element {
 
   useEffect(() => {
     if (view === 'dm' && me) {
-      void loadMyTickets(trees.map((t) => t.project.id), me.id)
-        .then(setMyTickets)
-        .catch(() => setMyTickets([]));
+      void loadMyWork()
+        .then((rows) => setQueueTickets(rows as unknown as Ticket[]))
+        .catch(() => setQueueTickets([]));
     }
     // Read once per session: the registry is workspace configuration, not
     // something that changes while you are looking at the store.
@@ -493,33 +498,6 @@ export default function App(): JSX.Element {
   const postFromPerson = useCallback(
     (content: string): Promise<string> => postAs(null, content),
     [postAs],
-  );
-
-  /**
-   * Answer the Update Agent about one ticket, in place.
-   *
-   * Deliberately does not touch the selection: you can be asked about three
-   * tickets while working a fourth and answer all three without moving.
-   */
-  const answer = useCallback(
-    async (t: Ticket): Promise<void> => {
-      const text = (replies[t.id] ?? '').trim();
-      if (!text) return;
-      setReplying(t.id);
-      setActionError(null);
-      try {
-        await postToTicket(t, text);
-        setReplied((r) => ({ ...r, [t.id]: true }));
-        setReplies((r) => ({ ...r, [t.id]: '' }));
-        // If it happens to be the open ticket, show it immediately.
-        if (t.conversationId === conversationId) void refreshThread();
-      } catch (err) {
-        setActionError(err instanceof Error ? err.message : `Could not post to ${t.xyneId}.`);
-      } finally {
-        setReplying(null);
-      }
-    },
-    [replies, conversationId, refreshThread],
   );
 
   /** Send from the composer. Keeps the draft if the write fails. */
@@ -780,10 +758,12 @@ npm run dev`}
                 </div>
 
                 <p className="text-[13px] text-muted-foreground leading-relaxed">
-                  Ask it about a ticket instead of messaging a person. The answer is posted{' '}
+                  It works both ways. Ask it about a ticket and the answer is posted{' '}
                   <strong className="text-foreground font-medium">into that ticket&rsquo;s own chat</strong>, not
-                  back to you privately — so everyone on the ticket sees the status once, and nobody has to
-                  ask again.
+                  back to you privately — so everyone on the ticket sees the status once, and nobody has to ask
+                  again. And below, it asks <em>you</em>: it reads every open ticket you are on, finds the ones
+                  where the pull request landed and the ticket never moved, and offers the one change that would
+                  fix each. Nothing changes until you press something.
                 </p>
 
                 {ticket ? (
@@ -841,93 +821,29 @@ npm run dev`}
                   </div>
                 )}
 
-                {/* The other direction: the agent asking YOU, because you are
-                    the assignee and the ticket has gone quiet. */}
-                <section className="flex flex-col gap-2">
-                  <div className="flex items-baseline gap-2">
-                    <h3 className="text-[12px] font-semibold">It needs an update from you</h3>
-                    <span className="text-[11px] text-muted-foreground">
-                      {myTickets.length} assigned to you
-                    </span>
-                  </div>
-                  {myTickets.length === 0 ? (
-                    <p className="text-[12px] text-muted-foreground">
-                      Nothing assigned to you on your tracks.
-                    </p>
-                  ) : (
-                    <div className="flex flex-col gap-1.5">
-                      {myTickets.slice(0, 8).map((t) => {
-                        const days = staleDays(t);
-                        const draft = replies[t.id] ?? '';
-                        const done = replied[t.id];
-                        return (
-                          <div key={t.id} className="rounded-lg border border-border p-2.5 flex flex-col gap-2 min-w-0">
-                            <div className="flex items-start gap-3 min-w-0">
-                              <div className="min-w-0 flex-1">
-                                <div className="flex items-center gap-1.5 min-w-0">
-                                  <span className="font-mono text-[10px] text-muted-foreground shrink-0">
-                                    {t.xyneId}
-                                  </span>
-                                  <span className="text-[12px] truncate">{t.title}</span>
-                                </div>
-                                <p className="text-[11px] text-muted-foreground mt-0.5">
-                                  {humanize(t.stageName)} ·{' '}
-                                  {days > 0 ? `quiet for ${days}d` : 'updated today'}
-                                </p>
-                              </div>
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                className="shrink-0 text-[11px]"
-                                onClick={() => {
-                                  // Full context, if you would rather work it properly.
-                                  const owner = trees.find((tr) =>
-                                    tr.tracks.some((c) => c.id === t.channelId),
-                                  );
-                                  setProjectId(owner?.project.id ?? null);
-                                  setTrackId(t.channelId);
-                                  setTicketId(t.id);
-                                  setView('projects');
-                                }}
-                              >
-                                Open
-                              </Button>
-                            </div>
-
-                            {/* Answer here. Posting from this pane does NOT change
-                                what is selected — the whole point is that being
-                                asked about three tickets costs no navigation. */}
-                            {done ? (
-                              <p className="text-[11px] text-ok">Posted to {t.xyneId}&rsquo;s chat.</p>
-                            ) : (
-                              <div className="flex gap-2">
-                                <Input
-                                  value={draft}
-                                  placeholder={`Update on ${t.xyneId}…`}
-                                  className="h-7 text-[12px]"
-                                  onChange={(e) =>
-                                    setReplies((r) => ({ ...r, [t.id]: e.target.value }))
-                                  }
-                                  onKeyDown={(e) => {
-                                    if (e.key === 'Enter' && draft.trim()) void answer(t);
-                                  }}
-                                />
-                                <Button
-                                  size="sm"
-                                  className="shrink-0 text-[11px]"
-                                  disabled={replying === t.id || draft.trim().length === 0}
-                                  onClick={() => void answer(t)}
-                                >
-                                  {replying === t.id ? 'Posting…' : 'Reply'}
-                                </Button>
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </section>
+                {/* The other direction: the agent asking YOU.
+                    This is the whole of the update agent's cross-ticket view —
+                    the ledger's card only reaches a ticket somebody opened, and
+                    the tickets that go stale are exactly the ones nobody opens. */}
+                <UpdateQueue
+                  tickets={queueTickets}
+                  {...(me?.id ? { meId: me.id } : {})}
+                  onOpen={(w) => {
+                    const owner = trees.find((tr) => tr.tracks.some((c) => c.id === w.channelId));
+                    setProjectId(owner?.project.id ?? null);
+                    setTrackId(w.channelId);
+                    setTicketId(w.id);
+                    setFocused(w);
+                    setView('projects');
+                  }}
+                  onPost={async (t, appId, text, kind) => {
+                    await postToTicket(t, tagUpdate(appId, text, kind));
+                    // Only refresh if it happens to be the thread on screen —
+                    // acting on eight tickets from here should cost eight writes,
+                    // not eight thread reloads.
+                    if (t.conversationId === conversationId) await refreshThread();
+                  }}
+                />
 
                 <p className="text-[11px] text-muted-foreground/80">
                   Your direct messages are deliberately not listed here. This pane is one agent, not an inbox.
@@ -1123,6 +1039,11 @@ npm run dev`}
           onSend={async text => void (await postFromPerson(text))}
           onRecord={async (text, kind) => {
             if (tabTicket) await postFromApp(tabTicket, text, kind);
+          }}
+          onRecordFrom={async (appId, text, kind) => {
+            if (!tabTicket) return;
+            await postToTicket(tabTicket, tagUpdate(appId, text, kind));
+            await refreshThread();
           }}
           onRefresh={refreshThread}
         />
