@@ -1,249 +1,287 @@
-# How linking works
+# Linking, and what "another surface" actually means
 
-Worked examples from this workspace, using two real tickets:
-
-- **XYNE-62896** — *debug panel optimizations*, on `#vespa-search`, board `search`.
-  Has two GitHub PRs and a linked PR ticket.
-- **XYNE-63024** — *Multiplayer demo*, created for this write-up on the same
-  board, with data deliberately pulled in from four different systems.
+Two corrections to the first draft of this document are marked **CORRECTION**
+below. Both were wrong in the same direction — they understated what is already
+reachable — and both were settled by reading live rows rather than types.
 
 ---
 
-## The short answer to "what happens when I link something?"
+## The thing this app is for
 
-**A message is written into the ticket's own conversation.** That's it. There is
-no separate link table of ours, no hidden app state, nothing that only this app
-can read.
-
-That sounds underwhelming until you notice what it buys:
-
-- The link is **visible in Xyne itself**. Open XYNE-63024 in the Xyne dashboard
-  and the linked call and PR are right there in the thread.
-- It **outlives this app**. If this app is deleted tomorrow, the links remain.
-- The **agent reads it**. Anything an agent is asked about the ticket, it sees
-  the links, because they are in the conversation it reads.
-- It is **ordered**. A link is a thing that happened at a time, next to the
-  message that explains why.
-
-The line carries a marker so the surface can attribute it:
+Xyne Spaces already *receives* work from outside itself. The adapter registry in
+`apps/backend/src/integrations/adapters` is:
 
 ```
-[app:github|note] Linked **[juspay/xyne-spaces] fix: XYNE-62896 …(PR #1624)** — https://github.com/juspay/xyne-spaces/pull/1624
+zoho   google   microsoft   slack-desk   slack-webhook-tickets   ozonetel   social-media
 ```
 
-`[app:github|note]` is stripped before display and becomes the **via GitHub ↗**
-badge plus the `github` chip. The marker rides in the body rather than in
-`metadata` because the server hardcodes `messages.metadata` to `null` on write —
-we can *read* everyone else's metadata, but not write our own.
+Zoho Desk, Gmail, Outlook, Slack, telephony, app stores. Plus Bitbucket and
+GitHub webhooks, which come in by a different door.
 
-> **Not the same thing:** `Linked to this ticket` in the Related tab shows
-> `ticket_references` — real edges Xyne stores, written by people and by the
-> SDLC integration. Those are covered in mechanism 2 below. Our links are
-> messages; those are rows.
+What Xyne does **not** do is keep the origin visible. By the time a Zoho case
+reaches a thread it is a Xyne message written by a pseudo-user called "Zoho
+Test", and the fact that a person at a different company typed it in a different
+product is nowhere on the screen. There is no way back to it either.
+
+So the difference between this app and Xyne Spaces is not that it shows more
+tickets. It is that **every line says which product it came from, names the
+company the writer works for, and opens that product in one click.**
+
+Live, on `XYNE-63024`:
+
+```
+ACROSS SURFACES   ⑂ Bitbucket 2 ↗   ✉ Zoho Desk 2 ↗   ⑂ GitHub 1 ↗   ◉ Call 1 ↗   ◇ Xyne 8
+```
+
+Four products that are not Xyne, on one ticket, each chip a link out.
+
+And on `XYNE-1371`, an ordinary support ticket that nobody prepared:
+
+```
+ACROSS SURFACES   ✉ Zoho Desk 1 payu.in ↗
+outside this org  no_reply@payu.in
+```
 
 ---
 
-## The four ways data reaches a ticket
+## What the row actually carries
 
-### 1. Webhooks from a code host → activity in the thread
+Verified by scanning 293 messages across 86 live conversations, not read off a
+type definition. `message.metadata` is typed `unknown` in the SDK and is
+**populated on read** — it is only forced to `null` on write.
 
-A PR opened against a ticket produces a `SYSTEM` message whose metadata carries
-the whole event. Real row from **XYNE-62896**:
+| Field | Real value from this workspace |
+|---|---|
+| `webUrl` | `https://desk.zoho.com/support/juspay4/ShowHomePage.do#Cases/dv/458844000296724111` |
+| `ticketNumber` | `784736` |
+| `prUrl` | `https://bitbucket.juspay.net/projects/XYNE/repos/xyne-spaces/pull-requests/3485` |
+| `externalAuthor` | `{ name: '"PG Support"', email: 'pgsupport@billdesk.com' }` |
+| `externalSource` | `c2b90ef1-235a-48ce-867c-0af1f40bd2cc` |
+| `canvasUrl`, `linkPreview.url` | Xyne canvases; unfurled external URLs |
+
+And on the `Email` rows, via `email.listForConversations`:
+
+| Field | Real value |
+|---|---|
+| `from` / `to` / `cc` | `vamshi.devalapelly-v@adityabirlacapital.com` → `support@juspay.in`, +2 |
+| `externalThreadId` | `458844000296724694` — the provider's own id |
+
+> **CORRECTION 1.** The first draft said: *"Deep links back out to a Slack
+> message or Zoho ticket. The index stores the origin in a field the result
+> transformer drops."*
+>
+> That is true of **search** and false of **messages**. `transformMail` and
+> `transformMessage` (`vespaSearch/resultTransform.ts`) do return ids and no
+> permalink — but `transformFile` passes `originalUrl` and `transformCall`
+> passes `roomLink`, and more importantly the Zoho case URL is sitting on the
+> *message* as `metadata.webUrl`. It needs no SDK change and no backend change.
+> We simply were not reading it.
+
+### `externalSource` is a row id, not a name
+
+It looks like it should name the adapter. It does not — it is the primary key of
+an `ExternalSource` row, and there is no SDK route that resolves it. An earlier
+version of `provenance.ts` title-cased its first segment, which would have put
+**"via C2b90ef1"** on screen.
+
+So the system is named from evidence that is actually on the row, in this order:
+
+1. **`webUrl`** → the origin's own host → *Zoho Desk*
+2. **slack markers** (`source: 'slack'`, `slackChannelId`) → *Slack*
+3. **`Email.externalThreadId` shape** → the three mail adapters mint visibly
+   different ids: Zoho is 15–20 digits, Outlook starts `AAMk`, Gmail is hex
+4. otherwise → **"via Email"**, which is all we can honestly claim
+
+---
+
+## The five ways data reaches a ticket
+
+### 1. An adapter ingests it — Zoho, Gmail, Outlook, Slack, Ozonetel
+
+The pipeline creates a Xyne message and stamps `externalSource`,
+`externalAuthor` and (for Zoho) `webUrl` + `ticketNumber` on it. Long mails are
+split into chunks, each carrying the same stamp.
+
+This is where the outside companies come from. On `XYNE-1414`, three
+organisations in one thread:
+
+```
+vamshi.devalapelly-v@adityabirlacapital.com  →  support@juspay.in
+support@juspay.in                            →  vamshi.devalapelly-v@…
+pgsupport@billdesk.com                       →  support@juspay.in
+```
+
+We badge each with its system and mark the ones who do not work here.
+
+### 2. A code host fires a webhook — Bitbucket, GitHub
+
+A `SYSTEM` message whose metadata carries the event:
 
 ```json
-{
-  "msgType": "SYSTEM",
-  "content": "PR #1624 raised, TODO → IN_REVIEW, author: Pradeesh333",
-  "metadata": {
-    "prId": 1624,
-    "prUrl": "https://github.com/juspay/xyne-spaces/pull/1624",
-    "prEvent": "CREATED",
-    "prWebhook": true,
-    "activityType": "PR",
-    "isTicketActivity": true
-  }
-}
+{ "prId": 9604, "prUrl": "https://bitbucket.juspay.net/…/pull-requests/9604",
+  "prEvent": "CREATED", "prWebhook": true, "activityType": "PR", "isTicketActivity": true }
 ```
 
-`prUrl` is what makes the badge clickable — the only origin in the whole system
-that hands us a link back out.
+`prUrl` is what makes the chip clickable. We do not create these.
 
-**We do not create these.** They arrive because the repo has a Xyne webhook.
+### 3. Xyne's own ticket references
 
-### 2. Xyne's own ticket references → the "Linked" section
-
-When a PR is opened, Xyne creates a **second ticket for the PR itself** and links
-it back. On XYNE-62896:
+A PR opened against a ticket makes Xyne create a **second ticket for the PR**
+and link it back. On `XYNE-62896`:
 
 ```
 XYNE-62897  "[juspay/xyne-spaces] fix: XYNE-62896 debug panel optimizations (PR #1624)"
             ticketType: DESK     relation: DUPLICATE_POSSIBLE (direction: in)
 ```
 
-So "the PR" is a first-class object you can navigate to, and the Related tab
-shows it above the search results with an **Open PR ↗** button.
+Read via `getDetails(ticketId)` → `referencesIn` / `referencesOut`. There is no
+list method; references only come back joined onto `getDetails`.
 
-Read via `getDetails(ticketId)` → `referencesIn` / `referencesOut`.
+### 4. Search proposes — the Related tab
 
-> **SDK asymmetry:** you can `tickets.addReference` / `updateReference` /
-> `removeReference`, but there is **no list method** — references only come back
-> joined onto `getDetails`.
+`search.query` groups by `docType`, and the group value *is* the badge. Mail hits
+carry `senderEmail`, which is enough to mark the counterparty before you click.
 
-### 3. Search → the "Possibly related" section
+### 5. Our surfaces record — a message in the thread
 
-`search.query` groups results by `docType`, and the group value *is* the badge.
-For XYNE-62896 the seed and result:
+**Linking writes a message into the ticket's own conversation.** No separate
+link table, no hidden app state.
 
 ```
-matching "XYNE-62896 optimizations debug panel" · 32 in the workspace
-
-TICKET 9
-  Gate the Xyne AI debug panel behind capability/…   0.86   XYNE-55038
-  fix: Thread panel text pixelated when viewing im…  0.75   XYNE-13763
-  Implement auto-scroll for Workflow Panel           0.72   XYNE-5289
+[app:xyne-desk|note] Linked email: **Payment debited but showing pending.**
+  — from vamshi.devalapelly-v@adityabirlacapital.com (adityabirlacapital.com)
+  · https://desk.zoho.com/support/juspay4/ShowHomePage.do#Cases/dv/458844000296724694
 ```
 
-The seed is built by dropping stopwords and words under four characters and
-keeping the rare vocabulary, with the ticket key first. Searching the raw title
-returns everything containing "fix" or "used"; searching the rare words returns
-the four other MoneyFramework tickets.
+`[app:xyne-desk|note]` is stripped before display and becomes the **via Zoho
+Desk ↗** chip. The marker rides in the body because the server hardcodes
+`messages.metadata` to `null` on write.
 
-The seed is **shown on screen** so a surprising result is explicable.
-
-Clicking **Link** on one of these promotes it from a guess to a record —
-mechanism 4.
-
-### 4. Our surfaces → a message in the thread
-
-Every app in the shell writes what it did:
-
-| Surface | Writes | Badge it produces |
-|---|---|---|
-| Tickets Board | moves, edits, assignments, new tickets | via Xyne |
-| Xyne Desk | replies to a support ticket | via Email |
-| Xyne Scribe | a call, with room link and attendees | via Call ↗ |
-| GitHub & Bitbucket | a repo, PR or commit | via GitHub ↗ |
-| Related tab | a search hit you chose to keep | via Xyne |
-
-All of it through one call — the app names the **ticket**, never a conversation,
-and the shell resolves the target from the ticket's own row:
-
-```ts
-postUpdate(workItem, 'Linked call: **Design sync** — https://…', 'note')
-```
+That is underwhelming until you notice what it buys: the link is visible in Xyne
+itself, it outlives this app, any agent asked about the ticket reads it, and it
+sits in time order next to the message explaining why.
 
 ---
 
-## Worked example: XYNE-63024
+## How a Zoho link is built when the row has no URL
 
-Four systems, one thread. What the ledger renders, top to bottom:
+`webUrl` rides on roughly **one ingested message in a hundred** — three of the
+293 sampled. So most emails have no URL on them at all. They do have the id.
 
-```
-You  Xyne     ◇ via Xyne      17m   Ticket created in search: Multiplayer demo…
-                                    Kicking this off. Pulling in what already exists…
-You  Xyne     ⑂ via GitHub ↗  github       17m   Linked [juspay/xyne-spaces] fix: … (PR #1624)
-You  Xyne     ◉ via Call ↗    xyne-scribe  17m   Linked call: Reviewing final Visa portfolio…
-You  Xyne     ◇ via Xyne      kanban-board 17m   Linked ticket: Update workflow chat panel…
-                                                 Linked ticket: Highlight failed steps…
-                                                 Linked ticket: debug panel optimizations
-You  Xyne     ◇ via Xyne  Question  16m   @Ask AI what is the current state of this ticket?
-AA   Ask AI   ◆ via App             15m   Here's the current picture: …
-```
+From `zoho/transformer.ts:60-92`, `externalThreadId` is `getThreadId(...)` which
+returns `payload.ticketId ?? payload.id` — the Zoho ticket id — and `webUrl` is a
+sibling field on that same Zoho ticket, ending in that same id. So:
 
-Two details worth pointing at:
+1. The **first** time this app sees a real `webUrl` anywhere in the workspace, it
+   keeps everything before the id: `…/support/juspay4/ShowHomePage.do#Cases/dv/`.
+2. It writes that to **global** app storage, so one observation unlocks the link
+   for every person and every session afterwards.
+3. Every Zoho email then links out, id by id.
 
-**Consecutive rows only group when the source is the same.** Rows 4–6 are three
-ticket links from the same app in the same minute, so they share one header.
-Rows 2, 3 and 4 do not group despite being the same sender in the same minute,
-because their sources differ — and the badge is the entire point.
+The portal segment (`juspay4`) is **learned, never hardcoded**. Before a real URL
+has been seen, `zohoTicketUrl` returns null and rows are labelled without a link.
+A chip that says ↗ and then 404s is worse than a chip that does not.
 
-**The agent's answer is a message.** It survives reload, everyone on the ticket
-sees it, and it is in the record the next agent reads.
+The same is *not* done for Gmail or Slack. Both have well-known permalink shapes
+and we hold the ids, but a Gmail link needs the right `authuser` and a Slack link
+needs the workspace subdomain — neither is on any row we can read. Those are
+offered only if a caller supplies the missing piece (`configureOrigins`).
 
 ---
 
-## About your PR comment
+## Your PR comments: why neither one arrived
 
-You commented at `pull/1624/changes#r3963340329` and it does not appear. That is
-correct behaviour, for two independent reasons. Xyne's GitHub webhook router
-handles exactly two event types:
+You commented on GitHub PR #1624 at `#r3963340329`, and on Bitbucket PR #9604 at
+`?commentId=2021956`. Neither appeared. Both hosts sent the event.
+
+> **CORRECTION 2.** The first draft said: *"Bitbucket is different — it has
+> `pr:comment:added` and a real `handleCommentEvent`. So PR comments flow from
+> Bitbucket and not from GitHub."*
+>
+> Wrong. The handler exists and **writes nothing to the ticket.** In full
+> (`bitbucketWebhookService.ts:153-193`), it extracts mentions, and if one
+> matches a single hardcoded address it starts a PR-check workflow. Your comment
+> mentioned nobody, so it returned success and the comment was gone. Comments
+> flow from neither host.
+
+GitHub fails differently. Its router handles exactly two events:
 
 ```ts
-if (eventType === 'pull_request')  return this.handlePullRequestEvent(…)
-if (eventType === 'issue_comment') return this.handleIssueCommentEvent(…)
+if (eventType === 'pull_request')  …
+if (eventType === 'issue_comment') …
 logger.info(`Event ${eventType} acknowledged but not processed`)
 ```
-*(`apps/backend/src/services/githubWebhookService.ts:137-152`)*
+*(`githubWebhookService.ts:130-152`)*
 
-1. A review comment on a diff is **`pull_request_review_comment`**, which is not
-   in that router at all — it falls through to "acknowledged but not processed".
-2. Even a plain PR comment (`issue_comment`) is only acted on if it **mentions
-   Xyne**:
+A comment on a line of the diff — the "Files changed" tab, which is what
+`#r3963340329` is — arrives as **`pull_request_review_comment`**. Not in the
+router. Neither is `pull_request_review`, which carries approvals. And a plain
+`issue_comment` only acts if it mentions `@xynespaces`.
 
-```ts
-const isXyneMentioned = mentions.some(m =>
-  m.toLowerCase() === XYNE_MENTION_EMAIL || m.toLowerCase() === XYNE_MENTION_USERNAME)
-// XYNE_MENTION_USERNAME = 'xynespaces'
-```
+**This cannot be fixed from inside the app.** No route exposes PR comments —
+`sdlc.ts` covers repositories, wikis and credentials and nothing else — and the
+published app cannot call `bitbucket.juspay.net` directly (cross-origin, and it
+holds no credential).
 
-**Bitbucket is different** — it has `pr:comment:added` and a real
-`handleCommentEvent`. So PR comments flow from Bitbucket and not from GitHub.
+So it is written as a patch instead: **`patches/pr-comments-to-tickets.patch`**.
+Three files, one new `recordPRComment()` reusing the existing PR→ticket
+resolution, both hosts wired to it, plus the two missing GitHub events. It
+applies cleanly to `xyne-spaces@466c7046d` and `tsc --noEmit` on the backend is
+clean with it applied. **It is not applied** — see `patches/README.md`.
 
-### What you can do about it
-
-| Option | Effort | Result |
-|---|---|---|
-| Comment `@xynespaces …` on the PR | none | that one comment reaches Xyne |
-| Add `pull_request_review_comment` to the webhook's event list, and a branch in the router | small backend change | all review comments flow, like Bitbucket |
-| Read comments from the GitHub API in the Code surface | app-side only | comments visible in the shell, not in the ticket's record |
-
-The middle one is the right fix and it is a handful of lines next to code that
-already does it for Bitbucket.
+Once it is, the comment lands with `prEvent: 'COMMENTED'` and `prCommentUrl`, and
+this app renders it as **via Bitbucket ↗** with no further change.
 
 ---
 
-## What else the SDK can give us
+## What else the SDK gives us
 
-Verified against the typings and, where noted, against live data.
+**Reachable and now used**
 
-**Reachable and not yet used**
+| Capability | Call | What it gives |
+|---|---|---|
+| The email thread on a ticket | `email.listForConversations` | recipients, cc, provider ids — `lib/mailthread.ts` |
+| Message provenance | `messages.listByConversation` → `metadata` | `webUrl`, `prUrl`, `externalAuthor` — `lib/provenance.ts` |
+| Cross-type search | `search.query({ apps: 'mail' \| 'file' \| 'call' \| 'chat' })` | the Related tab |
+| Real cross-ticket links | `getDetails` → `referencesIn/Out` | "Linked to this ticket" |
+| Shared app state | `storage … { scope: 'global' }` | the learned Zoho URL shape |
+
+**Reachable and still unused**
 
 | Capability | Call | What it would add |
 |---|---|---|
-| Scope search to a channel | `search.query({ in: channelId })` | "related, but only on this track" |
-| Search by person | `search.query({ from, mentions })` | "everything Priya touched on this work" |
-| Time-boxed search | `search.query({ after, before, range })` | "what changed since the PR opened" |
-| Real cross-ticket links | `tickets.addReference(...)` | promote a search hit to an edge Xyne itself shows |
-| Ticket attachments | `messages.getAttachments`, `listChannelAttachments` | files on the ticket, badged like everything else |
-| Sub-tickets | `tickets.listSubTickets` / `createSubTicket` | breakdown inside the unified view |
-| RCA | `tickets.getRca` | incident detail, when populated |
-| Stage approvals | `tickets.listStageRequests` | already read for moves; could be shown |
-| Server-side automation | `automations.createProposal` → `submitForApproval` → `approve` → `activate` | autonomy that runs without a browser open |
-| Presence-ish | `users.listBasic` → `lastActiveAt`, `statusContent` | "Priya is looking at this" from real data |
+| Scope search to a track | `search.query({ in: channelId })` | "related, but only on this track" |
+| Search by person or time | `{ from, mentions, after, before }` | "everything Priya touched since the PR opened" |
+| Write real reference edges | `tickets.addReference` | promote a search hit to an edge Xyne itself shows |
+| Attachments | `messages.getAttachments`, `tickets.listAttachments` | files on the ticket, badged like everything else |
+| Sub-tickets, RCA | `tickets.listSubTickets`, `getRca` | breakdown and incident detail |
+| Server-side automation | `automations.createProposal` → … → `activate` | autonomy that runs with no browser open |
 | Slack identity | `user.metadata.slackId` | link a person to their Slack account |
 
 **Reachable but with a catch**
 
-- `search.query({ ticketId })` is accepted but only constrains the *ticket*
-  index — the other buckets come back unfiltered. Not a cross-type scope.
-- `automations.createProposal` types `configJson` as `unknown` and passes it
-  through, but the server requires a JSON **string**. Stringify or it 400s.
-- There is **no CRON trigger** implemented, so no recurring automation.
+- `search.query({ ticketId })` is accepted but constrains only the *ticket*
+  index; other buckets come back unfiltered. Not a cross-type scope.
+- `listByConversation` answers `{ items, hasMore, total, nextOffset }` — **not**
+  `{ messages }`. Reading the wrong key fails silently as "no rows".
+- `channels.listEmail()` returns status rows carrying only `id`.
+- `automations.createProposal` types `configJson` as `unknown` but the server
+  requires a JSON **string**. Stringify or it 400s. There is no CRON trigger.
 
 **Not reachable at all**
 
-- **Agent Awakening.** Real, fully built, and invisible to us: the string
-  "awakening" appears zero times in `apps/backend/src` — the only service the
-  SDK talks to — and zero times in the SDK dist. We cannot enable it, and cannot
-  read whether it is on.
-- **Live agent streaming.** Xyne streams `snapshot | delta | reasoning |
-  invocation | label | done` over SSE, but it is dashboard-internal. We poll
-  `claw.getRun`, which returns the whole `AgentRun` row including
+- **Resolving `externalSource`** to an adapter name. No route lists
+  `ExternalSource` rows, so a message with no `webUrl` and no Slack markers
+  cannot be attributed more precisely than "Email".
+- **PR comments** — the patch above.
+- **Agent Awakening.** The string "awakening" appears zero times in
+  `apps/backend/src` (the only service the SDK talks to) and zero times in the
+  SDK dist.
+- **Live agent streaming.** Xyne streams over SSE, but it is dashboard-internal.
+  We poll `claw.getRun`, which returns the whole `AgentRun` row including
   `toolInvocations` — far more than its four-field type admits.
 - **`workflow.external_messages`**, the authoritative provenance join. Different
   Postgres schema, no SDK surface.
-- **Deep links back out** to a Slack message or Zoho ticket. The index stores
-  the origin in a field the result transformer drops.
 
 ---
 
@@ -251,9 +289,10 @@ Verified against the typings and, where noted, against live data.
 
 | File | What it does |
 |---|---|
-| `lib/provenance.ts` | resolves a message to its source; the vocabulary and why each badge is allowed |
-| `lib/related.ts` | the seed builder, the search read, and `linksFrom()` for real references |
-| `lib/agentrun.ts` | dispatch and poll, and the note on what `getRun` really returns |
-| `lib/mentions.ts` | the mention span format and why we write the real one |
-| `lib/watcher.ts` | the autonomy gate, and the full argument for why Awakening is out of reach |
+| `lib/origin.ts` | names external systems, and builds the way back out; the rules about what will not be guessed |
+| `lib/mailthread.ts` | the email side of a ticket — participants, provider, Zoho link, and the learned URL shape |
+| `lib/provenance.ts` | resolves a message to its source; the ordering and why each badge is allowed |
+| `lib/related.ts` | the seed builder, and `resolveOutbound` — recovering a link the index dropped |
+| `components/ledger/Surfaces.tsx` | the "across surfaces" strip and what counts as outside |
 | `components/ledger/MessageRow.tsx` | the row, and the grouping rule that keeps badges visible |
+| `patches/README.md` | the PR-comment bug, in full, with the fix |

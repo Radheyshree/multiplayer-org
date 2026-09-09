@@ -26,15 +26,18 @@
  *
  * TWO THINGS THIS CANNOT DO, stated so nobody designs around a fiction:
  *
- *   1. Deep-link OUT. Hits carry enough to open the thing inside Xyne
- *      (channelId + conversationId + messageId, or ticketId + xyneId) but the
- *      index field naming the origin system is dropped by the result
- *      transformer, so we cannot link back to the Slack message or the Zoho
- *      ticket it came from.
+ *   1. Deep-link out FROM THE HIT ALONE. Calls and files come back with a URL
+ *      (`roomLink`, `originalUrl`); mail and chat do not, because
+ *      `transformMail` and `transformMessage` return ids and stop. That is a
+ *      limit of the INDEX, not of the data — the Zoho case URL is on the
+ *      message the pipeline wrote, so `resolveOutbound` below fetches it when
+ *      someone actually links the hit.
  *   2. Filter by ticket. Search takes a query string, not a scope, so relevance
  *      is the only filter — which is why the seed matters so much below.
  */
 import { xyne } from './xyne';
+import { counterparty } from './origin';
+import { loadMailThread } from './mailthread';
 
 /** The doc kinds the result transformer actually handles. */
 export type DocType = 'ticket' | 'mail' | 'chat' | 'message' | 'file' | 'call' | 'channel' | 'user' | 'project';
@@ -56,6 +59,23 @@ export interface RelatedHit {
     messageId?: string;
     ticketId?: string;
     xyneId?: string;
+  };
+  /**
+   * Where the hit lives outside Xyne, as far as the INDEX knows.
+   *
+   * Thin on purpose. `transformMail` and `transformMessage` return ids and no
+   * permalink, so a mail hit arrives with a sender address and nothing to click
+   * — see `resolveOutbound`, which recovers the real URL from the row itself
+   * when someone actually chooses the hit.
+   */
+  origin?: {
+    /** Who sent it, where the index kept that. */
+    senderEmail?: string;
+    senderName?: string;
+    /** The outside organisation, when the sender is not one of us. */
+    org?: string;
+    /** A URL the index DID hand over: files and calls carry one. */
+    href?: string;
   };
 }
 
@@ -106,6 +126,7 @@ function toHit(raw: RawHit, docTypeFromGroup?: string): RelatedHit | null {
   const ctx = raw.searchContext ?? {};
   const ts = raw.metadata?.timestamp;
   const at = ts ? Date.parse(ts) : NaN;
+  const origin = originOf(ctx);
   return {
     id,
     docType: raw.type ?? docTypeFromGroup ?? 'unknown',
@@ -121,7 +142,75 @@ function toHit(raw: RawHit, docTypeFromGroup?: string): RelatedHit | null {
       ...(s(ctx.ticketId) ? { ticketId: s(ctx.ticketId) as string } : {}),
       ...(s(ctx.xyneId) ? { xyneId: s(ctx.xyneId) as string } : {}),
     },
+    ...(origin ? { origin } : {}),
   };
+}
+
+/** What the index itself gave us about the world outside Xyne. */
+function originOf(ctx: Record<string, unknown>): RelatedHit['origin'] | undefined {
+  const senderEmail = s(ctx.senderEmail);
+  const senderName = unhighlight(s(ctx.senderName));
+  // `roomLink` (calls) and `originalUrl` (files) are the two the transformers
+  // do pass through. Mail and chat hits get nothing — see resolveOutbound.
+  const href = s(ctx.roomLink) ?? s(ctx.originalUrl);
+  const org = counterparty(senderEmail) ?? undefined;
+  if (!senderEmail && !senderName && !href) return undefined;
+  return {
+    ...(senderEmail ? { senderEmail } : {}),
+    ...(senderName ? { senderName } : {}),
+    ...(org ? { org } : {}),
+    ...(href ? { href } : {}),
+  };
+}
+
+/**
+ * Recover the real outbound link for a hit, by reading the row it points at.
+ *
+ * Search will not give us this. `transformMail` returns `mailId`,
+ * `conversationId` and a sender and stops there, so an email that began life as
+ * a Zoho case comes back with no way home. The case URL *is* on the row — the
+ * ingestion pipeline writes `metadata.webUrl` on the message it creates — it is
+ * simply on the message rather than in the index.
+ *
+ * So this is one extra read, and only when someone chooses to link a hit: the
+ * cost is paid once and the recorded line stays clickable forever.
+ */
+export async function resolveOutbound(hit: RelatedHit): Promise<string | undefined> {
+  if (hit.origin?.href) return hit.origin.href;
+  const conversationId = hit.link.conversationId;
+  if (!conversationId) return undefined;
+  try {
+    const { spaces } = await xyne();
+    const raw = (await spaces.messages.listByConversation(conversationId, {
+      limit: 40,
+    })) as unknown;
+    // `listByConversation` answers { items, hasMore, total, nextOffset } — not
+    // `messages`. Reading the wrong key fails silently as "no rows", which is
+    // indistinguishable from a ticket that genuinely has no link out.
+    const rows = Array.isArray(raw)
+      ? raw
+      : ((raw as { items?: unknown[] })?.items ?? []);
+    for (const row of rows as Array<{ metadata?: unknown }>) {
+      const md = row.metadata && typeof row.metadata === 'object'
+        ? (row.metadata as Record<string, unknown>)
+        : null;
+      const url = s(md?.webUrl) ?? s(md?.prUrl);
+      if (url) return url;
+    }
+
+    // No URL on the messages — the common case, since `webUrl` rides on about
+    // one ingested row in a hundred. Fall back to the email thread, whose
+    // provider id IS the case id: `loadMailThread` builds the link from that
+    // plus the URL shape learned from a real Zoho page (lib/origin.ts).
+    const mail = await loadMailThread({
+      conversationId,
+      ...(hit.link.channelId ? { channelId: hit.link.channelId } : {}),
+    });
+    if (mail?.href) return mail.href;
+  } catch {
+    // A hit we cannot open is still a hit worth recording.
+  }
+  return undefined;
 }
 
 /**
@@ -252,9 +341,19 @@ export function byDocType(hits: RelatedHit[]): Array<{ docType: string; hits: Re
  * The pin is a message in the ticket's own conversation — the same place every
  * other surface writes — so it has to read as a sentence, not as a data dump.
  */
-export function describeHit(h: RelatedHit): string {
+export function describeHit(h: RelatedHit, href?: string): string {
   const kind = DOC_LABEL[String(h.docType)]?.label ?? 'Item';
-  return `Linked ${kind.toLowerCase()}: **${h.title}**${h.subtitle ? ` — ${h.subtitle}` : ''}`;
+  // Who it came from beats which Xyne row it is. On an email hit the subtitle
+  // is the ticket key, which the reader can already see; the sender's address
+  // is the thing that says a different company is involved.
+  const who = h.origin?.senderEmail
+    ? `from ${h.origin.senderEmail}${h.origin.org ? ` (${h.origin.org})` : ''}`
+    : h.subtitle;
+  return [
+    `Linked ${kind.toLowerCase()}: **${h.title}**`,
+    who ? ` — ${who}` : '',
+    href ? ` · ${href}` : '',
+  ].join('');
 }
 
 /**

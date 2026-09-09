@@ -38,6 +38,8 @@ import {
   type Ticket,
 } from './lib/org';
 import { hasToken } from './lib/xyne';
+import { configureOrigins } from './lib/origin';
+import { recallOrigins } from './lib/mailthread';
 import { loadRegistry, type Registry } from './lib/apps';
 import type { WorkItem } from './lib/workitem';
 import { ORG_APPS } from './orgApps/registry';
@@ -258,6 +260,12 @@ export default function App(): JSX.Element {
           loadAgents().catch(() => []),
         ]);
         setMe(user);
+        // Who counts as "us". Seeded from the signed-in address rather than
+        // hardcoded, so a message from another company is marked as one in any
+        // workspace this is installed into. See lib/origin.ts.
+        configureOrigins({ myEmail: user?.email ?? null });
+        // What a previous session learned about this workspace's Zoho URLs.
+        void recallOrigins();
         setTrees(tree);
         setAgents(ag);
         void listAgents().then(setAgentOptions).catch(() => setAgentOptions([]));

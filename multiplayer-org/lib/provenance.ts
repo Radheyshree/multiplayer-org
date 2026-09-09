@@ -37,6 +37,15 @@
  * offered below, but only for messages that carry a real PR webhook payload.
  */
 
+import {
+  cleanName,
+  counterparty,
+  system as systemById,
+  systemFromEmail,
+  systemFromUrl,
+  type ExternalSystem,
+} from './origin';
+
 /** Origins we can actually prove. Nothing here is aspirational. */
 export type SourceId =
   | 'xyne'
@@ -59,6 +68,15 @@ export interface Source {
   href?: string;
   /** Qualifier — "PR #7600", "release started". */
   detail?: string;
+  /**
+   * The system this actually came from, when it is one we can name — Zoho Desk
+   * rather than the category "email". Absent for rows that originate in Xyne.
+   */
+  system?: ExternalSystem;
+  /** The outside organisation's domain, when the writer was not one of us. */
+  org?: string;
+  /** The writer as the origin system names them, not as Xyne stored them. */
+  actor?: { name: string; email?: string };
 }
 
 /** The channel a message lives in, as far as this module cares. */
@@ -90,26 +108,8 @@ const str = (v: unknown): string | undefined => (typeof v === 'string' && v ? v 
  * worse than no badge at all.
  */
 function codeHost(url?: string): string {
-  if (!url) return 'via code host';
-  if (/github\.com/i.test(url)) return 'via GitHub';
-  if (/bitbucket/i.test(url)) return 'via Bitbucket';
-  if (/gitlab/i.test(url)) return 'via GitLab';
-  try {
-    return `via ${new URL(url).hostname.replace(/^www\./, '')}`;
-  } catch {
-    return 'via code host';
-  }
-}
-
-/**
- * Title-case an external source name for display.
- *
- * These arrive as registry keys — `zoho-euler`, `slack-desk-C123`,
- * `app-desk-<appId>-<chanId>` — so the tail is an id nobody wants to read.
- */
-function prettySource(name: string): string {
-  const head = name.split('-')[0];
-  return head.charAt(0).toUpperCase() + head.slice(1);
+  const s = systemFromUrl(url);
+  return s ? `via ${s.name}` : 'via code host';
 }
 
 const CHANNEL_SOURCE: Record<string, { id: SourceId; label: string; glyph: string }> = {
@@ -172,49 +172,70 @@ export function sourceOf(
     const detail = [id ? `PR #${id}` : null, event && event !== 'CREATED' ? event.toLowerCase() : null]
       .filter(Boolean)
       .join(' · ');
+    const sys = systemFromUrl(url);
     return {
       id: 'code',
       label: codeHost(url),
       glyph: '⑂',
       ...(url ? { href: url } : {}),
       ...(detail ? { detail } : {}),
+      ...(sys ? { system: sys } : {}),
     };
   }
 
-  // 2. Ingested from an external system. This is the pipeline's own stamp and
-  //    it names the source exactly, so it beats guessing from the channel.
-  const ext = str(md.externalSource);
-  if (ext) {
+  // 2. Ingested from an external system — the pipeline's own stamp, and the
+  //    single most important row type in this app.
+  //
+  //    `externalSource` is an ExternalSource ROW ID, not a readable key. Live
+  //    value: "c2b90ef1-235a-48ce-867c-0af1f40bd2cc". An earlier version of this
+  //    code title-cased its first segment and rendered "via C2b90ef1" — the
+  //    name is not in the message, so it has to come from something that is.
+  //    In order of how much it proves:
+  //      webUrl        → the origin's own URL, so the origin's own host
+  //      slack markers → slack-desk, which writes source:'slack'
+  //      author email  → mail; the provider when the address gives it away
+  if (str(md.externalSource) || md.externalAuthor || md.webUrl) {
     const web = str(md.webUrl);
-    const pretty = prettySource(ext);
-    const known: Record<string, { id: SourceId; glyph: string }> = {
-      Slack: { id: 'slack', glyph: '#' },
-      Zoho: { id: 'email', glyph: '✉' },
-      App: { id: 'app', glyph: '◆' },
-      Google: { id: 'email', glyph: '✉' },
-      Microsoft: { id: 'email', glyph: '✉' },
-      Ozonetel: { id: 'call', glyph: '◉' },
-    };
-    const hit = known[pretty] ?? { id: 'app' as SourceId, glyph: '◆' };
+    const author = externalAuthor(m);
+    const org = counterparty(author?.email) ?? undefined;
+    const detail = str(md.ticketNumber)
+      ? `case ${str(md.ticketNumber)}`
+      : str(md.eventType) === 'chunk_continuation'
+        ? undefined // "continued" is layout, not provenance
+        : str(md.eventType);
+
+    const sys =
+      systemFromUrl(web) ??
+      (str(md.source) === 'slack' || md.slackChannelId ? systemById('slack') : null) ??
+      systemFromEmail(author?.email);
+
+    const kind: SourceId = sys?.id === 'slack' ? 'slack' : 'email';
     return {
-      id: hit.id,
-      label: `via ${pretty}`,
-      glyph: hit.glyph,
+      id: kind,
+      label: `via ${sys?.name ?? (kind === 'slack' ? 'Slack' : 'Email')}`,
+      glyph: sys?.glyph ?? (kind === 'slack' ? '#' : '✉'),
       ...(web ? { href: web } : {}),
-      ...(str(md.eventType) ? { detail: str(md.eventType) } : {}),
+      ...(detail ? { detail } : {}),
+      ...(sys ? { system: sys } : {}),
+      ...(org ? { org } : {}),
+      ...(author ? { actor: { ...author, name: cleanName(author.name) } } : {}),
     };
   }
 
   // 2b. One of our own surfaces recorded this on another system's behalf. A URL
   //     in the body, if there is one, names the host precisely.
+  //
+  //     The URL decides the name, for every app and not just the code one: when
+  //     the desk surface records an email it writes the Zoho case link, and
+  //     "via Email" over a desk.zoho.com URL names a category where the row is
+  //     carrying the actual system. Only outside hosts override — a link to a
+  //     Xyne canvas leaves the app's own label alone.
   const viaApp = appId ? APP_SOURCE[appId] : undefined;
   if (viaApp) {
     const url = /https?:\/\/\S+/.exec(m.content ?? '')?.[0]?.replace(/[)>,.]+$/, '');
-    return {
-      ...viaApp,
-      ...(viaApp.id === 'code' && url ? { label: codeHost(url) } : {}),
-      ...(url ? { href: url } : {}),
-    };
+    const sys = systemFromUrl(url);
+    const named = sys?.external ? { label: `via ${sys.name}`, glyph: sys.glyph, system: sys } : {};
+    return { ...viaApp, ...named, ...(url ? { href: url } : {}) };
   }
 
   // 3. Arrived by email into a chat channel — the channel-email alias flow,
@@ -272,7 +293,20 @@ export function sourceOf(
     };
   }
 
-  // 10. A person typed it, here, in Xyne.
+  // 10. Written here, but about something that lives elsewhere. Xyne unfurls
+  //     pasted URLs and keeps the result in `metadata.linkPreview`, so a line
+  //     referring to a Zoho case or a pull request can still be followed out.
+  //     Only outside hosts qualify: a preview of a Xyne canvas is still Xyne.
+  const preview = md.linkPreview;
+  if (preview && typeof preview === 'object') {
+    const url = str((preview as Meta).url);
+    const sys = systemFromUrl(url);
+    if (sys?.external && url) {
+      return { ...XYNE, label: `mentions ${sys.name}`, glyph: sys.glyph, href: url, system: sys };
+    }
+  }
+
+  // 11. A person typed it, here, in Xyne.
   return XYNE;
 }
 

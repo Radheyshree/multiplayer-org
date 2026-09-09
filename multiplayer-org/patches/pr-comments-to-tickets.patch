@@ -1,0 +1,336 @@
+diff --git a/apps/backend/src/services/bitbucketWebhookService.ts b/apps/backend/src/services/bitbucketWebhookService.ts
+index 282a2d1..1ab9666 100644
+--- a/apps/backend/src/services/bitbucketWebhookService.ts
++++ b/apps/backend/src/services/bitbucketWebhookService.ts
+@@ -171,11 +171,11 @@ export class BitbucketWebhookService {
+ 
+       const mentions = this.extractMentions(commentText);
+       
++      const context = this.extractPRContext(payload, workspaceId);
++
+       if (mentions.some(m => m.toLowerCase() === 'john.doe@gmail.com')) {
+         logger.info(`[Bitbucket-Webhook] Detected @john.doe@gmail.com mention in PR #${pr.id} comment #${comment.id}`);
+-        
+-        const context = this.extractPRContext(payload, workspaceId);
+-        
++
+         await xyneCommentService.handleXyneMention({
+           prId: context.prId,
+           prUrl: context.prUrl,
+@@ -184,6 +184,27 @@ export class BitbucketWebhookService {
+         });
+       }
+ 
++      // Record the comment on the PR's ticket.
++      //
++      // This is the whole fix. Everything above only ran for comments that
++      // mentioned the bot; an ordinary review comment was parsed for mentions,
++      // found none, and was dropped. Bitbucket has sent us `pr:comment:added`
++      // all along — nothing consumed it.
++      const anchor = comment.anchor as { path?: string; line?: number } | undefined;
++      await prTicketStatusSyncService.recordPRComment({
++        prId: context.prId,
++        prUrl: context.prUrl,
++        commentId: comment.id,
++        commentText,
++        authorName: comment.author?.displayName,
++        authorEmail: comment.author?.emailAddress,
++        // Bitbucket Server anchors a diff comment to a path and line; a general
++        // PR comment has no anchor, and the difference is worth keeping.
++        commentUrl: `${context.prUrl}/overview?commentId=${comment.id}`,
++        ...(anchor?.path ? { filePath: anchor.path } : {}),
++        ...(anchor?.line ? { lineNumber: anchor.line } : {}),
++      });
++
+       return { 
+         success: true, 
+         message: `Comment event ${eventKey} processed successfully` 
+diff --git a/apps/backend/src/services/githubWebhookService.ts b/apps/backend/src/services/githubWebhookService.ts
+index 51fa512..001204e 100644
+--- a/apps/backend/src/services/githubWebhookService.ts
++++ b/apps/backend/src/services/githubWebhookService.ts
+@@ -86,8 +86,48 @@ interface GitHubIssueCommentPayload {
+     };
+   };
+   comment: {
++    id: number;
++    body: string;
++    user: GitHubUser;
++    /** Permalink to the comment itself, not just to the PR. */
++    html_url: string;
++  };
++  repository: GitHubRepository;
++}
++
++/** `pull_request_review_comment` — a comment anchored to a line of the diff. */
++interface GitHubReviewCommentPayload {
++  action: 'created' | 'edited' | 'deleted';
++  comment: {
++    id: number;
+     body: string;
+     user: GitHubUser;
++    html_url: string;
++    /** File the comment is anchored to. */
++    path?: string;
++    /** Line in the diff. Absent on an outdated comment. */
++    line?: number;
++  };
++  pull_request: {
++    number: number;
++    html_url: string;
++  };
++  repository: GitHubRepository;
++}
++
++/** `pull_request_review` — approve, request changes, or a review summary. */
++interface GitHubReviewPayload {
++  action: 'submitted' | 'edited' | 'dismissed';
++  review: {
++    id: number;
++    body?: string;
++    state: string;
++    user: GitHubUser;
++    html_url: string;
++  };
++  pull_request: {
++    number: number;
++    html_url: string;
+   };
+   repository: GitHubRepository;
+ }
+@@ -146,6 +186,20 @@ export class GitHubWebhookService {
+         return await this.handleIssueCommentEvent(payload as GitHubIssueCommentPayload);
+       }
+ 
++      // A comment on a line of the diff — what GitHub's "Files changed" tab
++      // produces, and the single most common way anyone reviews code there.
++      // It is a DIFFERENT event from `issue_comment`, so without this branch it
++      // fell through to "acknowledged but not processed" and the review was
++      // invisible from the ticket.
++      if (eventType === 'pull_request_review_comment') {
++        return await this.handleReviewCommentEvent(payload as GitHubReviewCommentPayload);
++      }
++
++      // The summary a reviewer writes when approving or requesting changes.
++      if (eventType === 'pull_request_review') {
++        return await this.handleReviewEvent(payload as GitHubReviewPayload);
++      }
++
+       logger.info(`[GitHub-Webhook] Event ${eventType} acknowledged but not processed`);
+       return { success: true, message: `Event ${eventType} acknowledged but not processed` };
+     } catch (error) {
+@@ -260,6 +314,18 @@ export class GitHubWebhookService {
+         });
+       }
+ 
++      // Every comment reaches the ticket, mentioned or not. The mention check
++      // above decides whether an AGENT acts; it should never have decided
++      // whether a person can SEE what was said.
++      await prTicketStatusSyncService.recordPRComment({
++        prId: prNumber,
++        prUrl,
++        commentId: payload.comment.id,
++        commentText,
++        authorName: payload.comment.user?.login,
++        commentUrl: payload.comment.html_url,
++      });
++
+       return { success: true, message: 'Comment event processed successfully' };
+     } catch (error) {
+       logger.error('[GitHub-Webhook] Error handling issue_comment event:', error);
+@@ -625,6 +691,71 @@ export class GitHubWebhookService {
+     }
+   }
+ 
++  /**
++   * Handle pull_request_review_comment — a comment anchored to a line of the diff.
++   *
++   * `payload.comment.path` and `.line` say where; both are surfaced so the
++   * ticket shows "commented on src/foo.ts:42" rather than an unplaced quote.
++   */
++  private async handleReviewCommentEvent(
++    payload: GitHubReviewCommentPayload
++  ): Promise<{ success: boolean; message: string }> {
++    try {
++      if (payload.action !== 'created') {
++        return { success: true, message: `Review comment ${payload.action} acknowledged` };
++      }
++      await prTicketStatusSyncService.recordPRComment({
++        prId: payload.pull_request.number,
++        prUrl: payload.pull_request.html_url,
++        commentId: payload.comment.id,
++        commentText: payload.comment.body || '',
++        authorName: payload.comment.user?.login,
++        commentUrl: payload.comment.html_url,
++        ...(payload.comment.path ? { filePath: payload.comment.path } : {}),
++        ...(payload.comment.line ? { lineNumber: payload.comment.line } : {}),
++      });
++      return { success: true, message: 'Review comment processed successfully' };
++    } catch (error) {
++      logger.error('[GitHub-Webhook] Error handling pull_request_review_comment:', error);
++      return { success: true, message: 'Review comment error acknowledged' };
++    }
++  }
++
++  /**
++   * Handle pull_request_review — approve / request changes / comment summary.
++   *
++   * An approval with no body is still worth recording: "approved" is the fact
++   * the ticket needs, and it is exactly what nobody could see before.
++   */
++  private async handleReviewEvent(
++    payload: GitHubReviewPayload
++  ): Promise<{ success: boolean; message: string }> {
++    try {
++      if (payload.action !== 'submitted') {
++        return { success: true, message: `Review ${payload.action} acknowledged` };
++      }
++      const state = (payload.review.state || '').toLowerCase();
++      const verdict =
++        state === 'approved'
++          ? 'approved this'
++          : state === 'changes_requested'
++            ? 'requested changes'
++            : 'reviewed this';
++      await prTicketStatusSyncService.recordPRComment({
++        prId: payload.pull_request.number,
++        prUrl: payload.pull_request.html_url,
++        commentId: payload.review.id,
++        commentText: payload.review.body ? `${verdict}: ${payload.review.body}` : verdict,
++        authorName: payload.review.user?.login,
++        commentUrl: payload.review.html_url,
++      });
++      return { success: true, message: 'Review processed successfully' };
++    } catch (error) {
++      logger.error('[GitHub-Webhook] Error handling pull_request_review:', error);
++      return { success: true, message: 'Review error acknowledged' };
++    }
++  }
++
+   /**
+    * Extract mentions from comment text
+    */
+diff --git a/apps/backend/src/services/prTicketStatusSyncService.ts b/apps/backend/src/services/prTicketStatusSyncService.ts
+index fb4847d..fbbfe7e 100644
+--- a/apps/backend/src/services/prTicketStatusSyncService.ts
++++ b/apps/backend/src/services/prTicketStatusSyncService.ts
+@@ -511,6 +511,97 @@ export class PRTicketStatusSyncService {
+    * Commented out since terminal status check is disabled
+    */
+ 
++  /**
++   * Record a review comment left on a pull request onto the PR's ticket.
++   *
++   * The PR lifecycle already reaches the ticket — opened, merged, declined all
++   * produce a SYSTEM message here. Comments did not, and a comment is where the
++   * actual review conversation happens: "this breaks pagination", "ship it".
++   * Someone reading the ticket saw that a PR existed and never saw a word of
++   * what was said about it, in either Bitbucket or GitHub.
++   *
++   * Deliberately reuses `findTicketForPR` and `resolveUpdatedBy` rather than
++   * repeating them: comment events must attribute to the same person and land
++   * on the same ticket as every other PR event, or the thread reads as two
++   * different integrations.
++   *
++   * Never throws. A webhook that 500s gets retried, and a retried comment is a
++   * duplicate line in someone's ticket.
++   */
++  async recordPRComment(params: {
++    prId: number;
++    prUrl: string;
++    commentId: number | string;
++    commentText: string;
++    authorName?: string;
++    authorEmail?: string;
++    /** Deep link to the comment itself, where the host gives us one. */
++    commentUrl?: string;
++    /** Set for a comment on a specific line of the diff. */
++    filePath?: string;
++    lineNumber?: number;
++  }): Promise<void> {
++    try {
++      const pr = await this.findPR(params.prId, params.prUrl);
++      if (!pr) {
++        logger.debug(`[PR-Ticket-Sync] Comment on untracked PR ${params.prId}, skipping`);
++        return;
++      }
++
++      const ticket = await this.findTicketForPR(pr);
++      if (!ticket?.conversationId) {
++        logger.debug(`[PR-Ticket-Sync] No ticket/conversation for PR ${params.prId}`);
++        return;
++      }
++
++      const senderId = await this.resolveUpdatedBy(params.authorEmail, ticket.workspaceId);
++      const who = params.authorName ?? params.authorEmail ?? 'someone';
++      const where = params.filePath
++        ? ` on <code>${escapeHtml(params.filePath)}</code>${params.lineNumber ? `:${params.lineNumber}` : ''}`
++        : '';
++      const link = params.commentUrl ?? params.prUrl;
++      const body = truncate(stripHtml(params.commentText), 1200);
++      const content =
++        `<a href="${link}" target="_blank" rel="noopener noreferrer">#${params.prId}</a>` +
++        ` — ${escapeHtml(who)} commented${where}:<br><blockquote>${escapeHtml(body)}</blockquote>`;
++
++      await recordTicketTimelineEvent({
++        message: {
++          conversationId: ticket.conversationId,
++          senderId,
++          content,
++          activityType: ActivityType.PR,
++          workspaceId: ticket.workspaceId,
++          extraMetadata: {
++            prWebhook: true,
++            prUrl: params.prUrl,
++            prId: params.prId,
++            // A distinct event so a reader (and any surface rendering this
++            // thread) can tell a comment from a state change.
++            prEvent: 'COMMENTED',
++            prCommentId: String(params.commentId),
++            ...(params.commentUrl ? { prCommentUrl: params.commentUrl } : {}),
++            ...(params.filePath ? { prCommentPath: params.filePath } : {}),
++            ...(params.authorName || params.authorEmail
++              ? {
++                  externalAuthor: {
++                    ...(params.authorName ? { name: params.authorName } : {}),
++                    ...(params.authorEmail ? { email: params.authorEmail } : {}),
++                  },
++                }
++              : {}),
++          },
++        },
++      });
++
++      logger.info(
++        `[PR-Ticket-Sync] Recorded comment ${params.commentId} on PR ${params.prId} to ticket ${ticket.xyneId}`
++      );
++    } catch (error) {
++      logger.error(`[PR-Ticket-Sync] Failed to record PR comment:`, error);
++    }
++  }
++
+   /**
+    * Send a message to the conversation about PR event
+    */
+@@ -1003,3 +1094,21 @@ export class PRTicketStatusSyncService {
+ 
+ // Singleton instance for use across the application
+ export const prTicketStatusSyncService = new PRTicketStatusSyncService();
++
++/** Comment bodies are markdown from an untrusted host; never inline them raw. */
++function escapeHtml(value: string): string {
++  return value
++    .replace(/&/g, '&amp;')
++    .replace(/</g, '&lt;')
++    .replace(/>/g, '&gt;')
++    .replace(/"/g, '&quot;');
++}
++
++/** Bitbucket sends plain text, GitHub sends markdown; strip any tags either way. */
++function stripHtml(value: string): string {
++  return value.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
++}
++
++function truncate(value: string, max: number): string {
++  return value.length <= max ? value : `${value.slice(0, max - 1)}…`;
++}

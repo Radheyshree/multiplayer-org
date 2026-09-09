@@ -52,6 +52,8 @@ import { AgentActivity } from './AgentActivity';
 import { Composer } from './Composer';
 import { MessageRow, type LedgerMessage } from './MessageRow';
 import { Related } from './Related';
+import { Surfaces } from './Surfaces';
+import { learnFrom, loadMailThread, type MailThread } from '../../lib/mailthread';
 
 const LAYERS: Array<{ id: Layer; label: string }> = [
   { id: 'all', label: 'All' },
@@ -109,6 +111,14 @@ export function Ledger({
   const [error, setError] = useState<string | null>(null);
   const [watch, setWatch] = useState<WatchState>(IDLE);
   const [watchNote, setWatchNote] = useState<string | null>(null);
+  /**
+   * The email thread behind this ticket, when there is one.
+   *
+   * Loaded separately because it is a separate read and most tickets have no
+   * mail: `loadMailThread` returns null and the strip renders nothing rather
+   * than a row of zeroes.
+   */
+  const [mail, setMail] = useState<MailThread | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const abort = useRef<AbortController | null>(null);
   /** Guards against a second evaluation starting while one is mid-dispatch. */
@@ -360,6 +370,28 @@ export function Ledger({
     })();
   }, [item, watch, messages, agents, agent, asking, onRefresh, onRecord, runAgent]);
 
+  /**
+   * Learn how this deployment writes Zoho URLs, from any message that carries
+   * one. Done on every thread rather than once at boot because the URL only
+   * appears on ingested rows — whichever ticket is open first teaches the app,
+   * and every ticket after it can link its mail back out.
+   */
+  useEffect(() => {
+    learnFrom(messages);
+  }, [messages]);
+
+  useEffect(() => {
+    let live = true;
+    setMail(null);
+    if (!item) return;
+    void loadMailThread(item).then(m => {
+      if (live) setMail(m);
+    });
+    return () => {
+      live = false;
+    };
+  }, [item?.id, item?.conversationId, item?.channelId, messages.length]);
+
   const visible = messages.filter(m =>
     matchesLayer(layer, parseUpdate(m.content ?? ''), m.msgType === 'BOT'),
   );
@@ -405,6 +437,10 @@ export function Ledger({
         />
       ) : (
         <>
+          {/* Which systems this work is spread across. Computed from the same
+              rows the thread badges, so the two can never disagree. */}
+          <Surfaces messages={messages} channel={channel} mail={mail} />
+
           {/* Layers. Completeness for the agent, legibility for people. */}
           <div className="flex shrink-0 items-center gap-1 px-3 py-1.5" style={{ borderBottom: `1px solid ${c.line}` }}>
             {LAYERS.map(l => (

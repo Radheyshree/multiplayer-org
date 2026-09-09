@@ -29,6 +29,25 @@ export function SourceBadge({ source, title }: { source: Source; title?: string 
     </>
   );
 
+  // The counterparty rides OUTSIDE the chip, in its own mark. Someone at
+  // another company writing on your ticket is the whole point of this surface,
+  // and burying their domain among the other qualifiers reads as one more
+  // machine field rather than as "this is not us".
+  const org = source.org ? (
+    <span
+      className="inline-flex shrink-0 items-center rounded-full px-1.5 py-px leading-none"
+      style={{
+        fontFamily: mono,
+        fontSize: '9.5px',
+        color: c.attention,
+        background: c.attentionSoft,
+      }}
+      title={`Outside your organisation — ${source.org}`}
+    >
+      {source.org}
+    </span>
+  ) : null;
+
   const style = {
     fontFamily: mono,
     fontSize: '9.5px',
@@ -42,7 +61,7 @@ export function SourceBadge({ source, title }: { source: Source; title?: string 
   // A badge that links somewhere must look like it does — the underline on
   // hover is the only affordance distinguishing the two, since colouring it
   // would make every ingested row shout.
-  return source.href ? (
+  const chip = source.href ? (
     <a
       href={source.href}
       target="_blank"
@@ -60,6 +79,14 @@ export function SourceBadge({ source, title }: { source: Source; title?: string 
   ) : (
     <span className={className} style={style} title={title}>
       {inner}
+    </span>
+  );
+
+  if (!org) return chip;
+  return (
+    <span className="inline-flex shrink-0 items-center gap-1">
+      {chip}
+      {org}
     </span>
   );
 }

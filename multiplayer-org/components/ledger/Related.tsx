@@ -21,6 +21,7 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   byDocType,
   describeHit,
+  resolveOutbound,
   DOC_LABEL,
   findRelated,
   linksFrom,
@@ -71,9 +72,28 @@ function Row({
             {hit.score.toFixed(2)}
           </span>
         </span>
-        {hit.subtitle ? (
-          <span className="block truncate text-[11px]" style={{ color: c.mute }}>
-            {hit.subtitle}
+        {/* Who sent it, and whether they work here. On an email hit the
+            subtitle is a ticket key the reader can already see; the sender's
+            address is what tells them another company is on this thread. */}
+        {hit.origin?.senderEmail || hit.subtitle ? (
+          <span className="flex items-baseline gap-1.5">
+            <span className="truncate text-[11px]" style={{ color: c.mute }}>
+              {hit.origin?.senderEmail ?? hit.subtitle}
+            </span>
+            {hit.origin?.org ? (
+              <span
+                className="shrink-0 rounded-full px-1.5 py-px leading-none"
+                style={{
+                  fontFamily: mono,
+                  fontSize: '9px',
+                  color: c.attention,
+                  background: c.attentionSoft,
+                }}
+                title={`Outside your organisation — ${hit.origin.org}`}
+              >
+                {hit.origin.org}
+              </span>
+            ) : null}
           </span>
         ) : null}
         {hit.context && hit.context !== hit.title ? (
@@ -164,7 +184,12 @@ export function Related({
   const pin = async (h: RelatedHit) => {
     setBusy(true);
     try {
-      await onPin(describeHit(h));
+      // Recover the way back out before recording the link. Doing it here
+      // rather than at render time means one read per link chosen, not one per
+      // result shown — and it is the difference between a line that says an
+      // email exists and a line that opens it in Zoho.
+      const href = await resolveOutbound(h);
+      await onPin(describeHit(h, href));
       setPinned(prev => new Set(prev).add(h.id));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
