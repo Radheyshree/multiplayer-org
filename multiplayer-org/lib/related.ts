@@ -256,3 +256,97 @@ export function describeHit(h: RelatedHit): string {
   const kind = DOC_LABEL[String(h.docType)]?.label ?? 'Item';
   return `Linked ${kind.toLowerCase()}: **${h.title}**${h.subtitle ? ` — ${h.subtitle}` : ''}`;
 }
+
+/**
+ * Links that already exist on the ticket, as opposed to ones search proposes.
+ *
+ * These are `ticket_references` rows — real edges Xyne stores, visible in the
+ * dashboard, written by people and by the SDLC integration. They are a
+ * different kind of fact from a search hit and must not be mixed in with them:
+ * a reference is a decision somebody made, a hit is a guess we are making.
+ *
+ * The clearest example in this workspace is a pull request. When a PR is opened
+ * against a ticket, Xyne creates a SECOND ticket for the PR itself —
+ * `[juspay/xyne-spaces] fix: XYNE-62896 debug panel optimizations (PR #1624)`,
+ * `ticketType: 'DESK'` — and links it back with a reference. So "the PR" is
+ * reachable from the work ticket without any integration of ours.
+ *
+ * ASYMMETRY WORTH KNOWING: the SDK can WRITE a reference (`tickets.addReference`,
+ * `updateReference`, `removeReference`) but has no list method. They are read
+ * back off `getDetails()`, which returns them as joined `referencesIn` /
+ * `referencesOut` arrays.
+ */
+export interface TicketLink {
+  ticketId: string;
+  xyneId?: string;
+  title: string;
+  /** LINKED | DUPLICATE_CONFIRMED | DUPLICATE_POSSIBLE | MERGED_INTO. */
+  relation: string;
+  /** Which way the edge points, from this ticket's perspective. */
+  direction: 'in' | 'out';
+  ticketType?: string;
+  /** Set when the linked ticket is really a pull request. */
+  prUrl?: string;
+  description?: string;
+}
+
+type RefRow = {
+  relationType?: string;
+  relation?: string;
+  sourceTicketId?: string;
+  targetTicketId?: string;
+  sourceTicket?: Record<string, unknown>;
+  targetTicket?: Record<string, unknown>;
+};
+
+/**
+ * A PR ticket's title carries its URL in all but form:
+ * `[juspay/xyne-spaces] fix: … (PR #1624)`. Rebuilding the link from the pieces
+ * is better than not linking at all, and the pieces are unambiguous.
+ */
+function prUrlFrom(title: string, description: string): string | undefined {
+  const direct = /https?:\/\/\S*?(?:pull\/\d+|pull-requests\/\d+)/.exec(description || title);
+  if (direct) return direct[0];
+  const m = /^\[([^/\]]+)\/([^\]]+)\].*\(PR #(\d+)\)/.exec(title);
+  return m ? `https://github.com/${m[1]}/${m[2]}/pull/${m[3]}` : undefined;
+}
+
+/** Read the edges already recorded on a ticket. */
+export function linksFrom(details: {
+  referencesIn?: unknown;
+  referencesOut?: unknown;
+} | null): TicketLink[] {
+  if (!details) return [];
+  const take = (rows: unknown, direction: 'in' | 'out'): TicketLink[] => {
+    if (!Array.isArray(rows)) return [];
+    return rows.flatMap((raw: RefRow) => {
+      const other = (direction === 'in' ? raw.sourceTicket : raw.targetTicket) as
+        | Record<string, unknown>
+        | undefined;
+      const id = (direction === 'in' ? raw.sourceTicketId : raw.targetTicketId) ?? (other?.id as string);
+      if (!id) return [];
+      const title = String(other?.title ?? 'Linked ticket');
+      const description = String(other?.description ?? '');
+      const url = prUrlFrom(title, description);
+      return [{
+        ticketId: String(id),
+        ...(other?.xyneId ? { xyneId: String(other.xyneId) } : {}),
+        title,
+        relation: String(raw.relationType ?? raw.relation ?? 'LINKED'),
+        direction,
+        ...(other?.ticketType ? { ticketType: String(other.ticketType) } : {}),
+        ...(url ? { prUrl: url } : {}),
+        ...(description ? { description } : {}),
+      }];
+    });
+  };
+  return [...take(details.referencesIn, 'in'), ...take(details.referencesOut, 'out')];
+}
+
+/** How a relation reads in a sentence. */
+export const RELATION_LABEL: Record<string, string> = {
+  LINKED: 'linked',
+  DUPLICATE_CONFIRMED: 'duplicate of',
+  DUPLICATE_POSSIBLE: 'possibly duplicate',
+  MERGED_INTO: 'merged into',
+};

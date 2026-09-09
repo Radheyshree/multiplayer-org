@@ -20,7 +20,7 @@
  * messages. A person reading later sees the agent's turn exactly where it
  * happened, with the same provenance treatment as a human's.
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { matchesLayer, parseUpdate, type Layer } from '../../lib/appUpdate';
 import {
   defaultAgent,
@@ -47,7 +47,9 @@ import {
 import type { ChannelLike } from '../../lib/provenance';
 import { c, eyebrow, mono } from '../../lib/theme';
 import type { WorkItem } from '../../lib/workitem';
+import { agentsMentioned, mentionables, type Mentionable } from '../../lib/mentions';
 import { AgentActivity } from './AgentActivity';
+import { Composer } from './Composer';
 import { MessageRow, type LedgerMessage } from './MessageRow';
 import { Related } from './Related';
 
@@ -76,6 +78,7 @@ export function Ledger({
   busy,
   description,
   onSend,
+  onRecord,
   onRefresh,
 }: {
   item: WorkItem | null;
@@ -87,6 +90,14 @@ export function Ledger({
   busy: boolean;
   description?: string;
   onSend: (text: string) => Promise<void>;
+  /**
+   * Record something attributed to this app rather than to the person typing.
+   *
+   * The agent's answer goes through here, so the ledger shows it as coming
+   * from a surface rather than from whoever asked. Without it an agent reply
+   * would appear under the asker's name, which is worse than not showing it.
+   */
+  onRecord?: (text: string, kind: 'activity' | 'note') => Promise<void>;
   onRefresh: () => void | Promise<void>;
 }) {
   const [tab, setTab] = useState<'thread' | 'related'>('thread');
@@ -102,8 +113,22 @@ export function Ledger({
   const abort = useRef<AbortController | null>(null);
   /** Guards against a second evaluation starting while one is mid-dispatch. */
   const waking = useRef(false);
+  /** The freshest thread, for reads inside async work that outlives a render. */
+  const latest = useRef<LedgerMessage[]>([]);
 
   const agent = agents.find(a => a.slug === agentSlug) ?? defaultAgent(agents);
+
+  /**
+   * Who can be @-mentioned here.
+   *
+   * Recomputed when the agent list changes, not on every keystroke — the
+   * directory is four thousand rows and rebuilding it per character is the
+   * difference between a menu that appears and one that stutters.
+   */
+  const candidates = useMemo(
+    () => mentionables(agents, new Map(agents.filter(a => a.spacesAppUserId).map(a => [a.slug, a.spacesAppUserId as string]))),
+    [agents],
+  );
 
   // Titles and teams are not on the user row — they need a second call, made
   // only for the people actually on screen. See lib/people.ts.
@@ -112,6 +137,10 @@ export function Ledger({
     void resolveProfiles(messages.map(m => m.senderId)).then(changed => {
       if (changed) setRuns(r => [...r]); // cheap re-render; the map is module state
     });
+  }, [messages]);
+
+  useEffect(() => {
+    latest.current = messages;
   }, [messages]);
 
   useEffect(() => {
@@ -141,35 +170,46 @@ export function Ledger({
   }, [draft, item, onSend]);
 
   /**
-   * Ask the agent about this ticket.
+   * Run an agent on this ticket and leave a durable record of it.
    *
-   * The run is bound to the ticket's own conversation, so the agent reads the
-   * same record everyone else is reading — which is what makes its answer worth
-   * anything. Its progress is polled (`claw.getRun` returns far more than its
-   * type admits; see lib/agentrun.ts) and rendered inline as it goes.
+   * The bug this replaces: the run lived in component state, so the answer
+   * vanished on reload and nobody else ever saw it. A conversation you cannot
+   * come back to is not a record, and this whole surface is a record.
+   *
+   * So three things are written, in order:
+   *   1. the QUESTION, as an ordinary message, before dispatching — if the run
+   *      fails, the thread still shows that somebody asked;
+   *   2. the ANSWER, attributed to this surface, when the run finishes;
+   *   3. nothing at all if the platform already answered — see the guard.
+   *
+   * THE DOUBLE-ANSWER GUARD. `claw.run({channelId})` may post the reply itself,
+   * and a `MESSAGE_RECEIVED` automation on the channel may run the same agent
+   * off our mention. Either would land a real message in the thread, and then
+   * posting ours too gives the reader the same answer twice. So before writing
+   * we re-read the thread and look for a BOT message that arrived after we
+   * dispatched. If one did, the platform got there first and we stay quiet.
    */
-  const ask = useCallback(
-    async (task: string) => {
-      if (!item || !agent) return;
+  const runAgent = useCallback(
+    async (slug: string, agentName: string, task: string) => {
+      if (!item) return;
+      const chosen = agents.find(a => a.slug === slug);
+      if (!chosen) return;
       setAsking(true);
       setError(null);
       const controller = new AbortController();
       abort.current = controller;
+      const dispatchedAt = Date.now();
       try {
         const sessionId = await dispatch({
-          agent: agent.slug,
+          agent: slug,
           task,
           conversationId: item.conversationId,
           ...(item.channelId ? { channelId: item.channelId } : {}),
         });
-        const local: LocalRun = {
-          sessionId,
-          agent,
-          task,
-          at: Date.now(),
-          run: { sessionId, status: 'running' },
-        };
-        setRuns(prev => [...prev, local]);
+        setRuns(prev => [
+          ...prev,
+          { sessionId, agent: chosen, task, at: dispatchedAt, run: { sessionId, status: 'running' } },
+        ]);
 
         const finished = await watchRun(
           sessionId,
@@ -177,16 +217,48 @@ export function Ledger({
           { signal: controller.signal },
         );
         setRuns(prev => prev.map(r => (r.sessionId === sessionId ? { ...r, run: finished } : r)));
-        // The agent may have posted into the thread itself; re-read either way,
-        // and let the reconciliation below decide what to keep on screen.
+
         await onRefresh();
+        const answer = finished.result?.trim();
+        if (answer && onRecord) {
+          const alreadyAnswered = latest.current.some(
+            m => m.msgType === 'BOT' && m.createdAt > dispatchedAt,
+          );
+          if (!alreadyAnswered) {
+            await onRecord(`**${agentName}**\n\n${answer}`, 'note');
+            await onRefresh();
+          }
+        }
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
       } finally {
         setAsking(false);
       }
     },
-    [item, agent, onRefresh],
+    [item, agents, onRefresh, onRecord],
+  );
+
+  /**
+   * Send what was typed, and dispatch anyone named in it.
+   *
+   * The message is posted either way — a mention of an agent is still something
+   * a person said, and it belongs in the thread whether or not the agent
+   * answers. Only then is the agent run, with the line as its task.
+   */
+  const submit = useCallback(
+    async (html: string, text: string, mentioned: Mentionable[]) => {
+      if (!item) return;
+      await onSend(html);
+      await onRefresh();
+      const named = agentsMentioned(mentioned);
+      for (const a of named) {
+        if (!a.slug) continue;
+        // Strip the @Name so the agent gets the request, not its own address.
+        const task = text.replace(new RegExp(`@${a.name}\\s*`, 'g'), '').trim();
+        await runAgent(a.slug, a.name, task || `Look at ${item.xyneId} and say where it stands.`);
+      }
+    },
+    [item, onSend, onRefresh, runAgent],
   );
 
   /** Load the shared watch state whenever the ticket changes. */
@@ -273,29 +345,20 @@ export function Ledger({
         setWatchNote(decision.reason);
 
         const { task, context } = wakePrompt(decision, item.xyneId, nameOf);
-        const sessionId = await dispatch({
-          agent: chosen.slug,
-          task,
-          context,
-          conversationId: item.conversationId,
-          ...(item.channelId ? { channelId: item.channelId } : {}),
-        });
-        setRuns(prev => [
-          ...prev,
-          { sessionId, agent: chosen, task: decision.reason, at: Date.now(), run: { sessionId, status: 'running' } },
-        ]);
-        const finished = await watchRun(sessionId, run =>
-          setRuns(prev => prev.map(r => (r.sessionId === sessionId ? { ...r, run } : r))),
-        );
-        setRuns(prev => prev.map(r => (r.sessionId === sessionId ? { ...r, run: finished } : r)));
-        await onRefresh();
+        // Record WHY it woke before it runs. An agent that speaks in a thread
+        // unprompted is alarming; one that says "I woke because a PR landed"
+        // first is a colleague.
+        await onRecord?.(`Woke automatically — ${decision.reason}`, 'activity').catch(() => {});
+        // Same durable path as a person asking, so an autonomous answer is as
+        // permanent as a requested one.
+        await runAgent(chosen.slug, chosen.name, `${task}\n\n${context}`);
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
       } finally {
         waking.current = false;
       }
     })();
-  }, [item, watch, messages, agents, agent, asking, onRefresh]);
+  }, [item, watch, messages, agents, agent, asking, onRefresh, onRecord, runAgent]);
 
   const visible = messages.filter(m =>
     matchesLayer(layer, parseUpdate(m.content ?? ''), m.msgType === 'BOT'),
@@ -447,50 +510,30 @@ export function Ledger({
               </p>
             ) : null}
 
-            <div className="flex items-center gap-2">
-              <input
-                value={draft}
-                onChange={e => setDraft(e.target.value)}
-                onKeyDown={e => {
-                  if (e.key === 'Enter' && !e.shiftKey && draft.trim()) {
-                    e.preventDefault();
-                    void send();
-                  }
-                }}
-                placeholder={`Message ${item.xyneId}…`}
-                disabled={busy}
-                className="h-8 min-w-0 flex-1 rounded-md px-2.5 text-[12.5px] outline-none"
-                style={{ background: c.card, border: `1px solid ${c.line}`, color: c.text }}
-              />
-              <button
-                onClick={() => void send()}
-                disabled={busy || !draft.trim()}
-                className="h-8 shrink-0 rounded-md px-3 text-[12px] font-medium disabled:opacity-40"
-                style={{ background: c.signal, color: c.signalText }}
-              >
-                Send
-              </button>
-            </div>
+            <Composer
+              placeholder={`Message ${item.xyneId} — or @mention an agent`}
+              candidates={candidates}
+              disabled={busy || asking}
+              onSubmit={submit}
+            />
 
             <div className="mt-2 flex items-center gap-2">
               <button
                 onClick={() =>
-                  void ask(
-                    draft.trim() ||
-                      `Read the full conversation on ${item.xyneId} — it holds the record from every surface that touched this ticket — and summarise where it stands and what is blocking it.`,
+                  agent &&
+                  void runAgent(
+                    agent.slug,
+                    agent.name,
+                    `Read the full conversation on ${item.xyneId} — it holds the record from every surface that touched this ticket — and summarise where it stands and what is blocking it.`,
                   )
                 }
                 disabled={asking || !agent}
                 className="flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-[11.5px] disabled:opacity-40"
                 style={{ background: c.agentSoft, color: c.agent }}
-                title={
-                  draft.trim()
-                    ? 'Send what you typed to the agent instead of to the thread'
-                    : 'Ask the agent where this ticket stands'
-                }
+                title="Ask the agent where this ticket stands"
               >
                 <span aria-hidden>✦</span>
-                {asking ? 'Working…' : draft.trim() ? 'Ask the agent this' : 'Ask about this ticket'}
+                {asking ? 'Working…' : 'Ask about this ticket'}
               </button>
 
               {agents.length > 1 ? (

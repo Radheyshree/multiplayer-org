@@ -23,8 +23,12 @@ import {
   describeHit,
   DOC_LABEL,
   findRelated,
+  linksFrom,
+  RELATION_LABEL,
   type RelatedHit,
+  type TicketLink,
 } from '../../lib/related';
+import { getDetails } from '../../lib/tickets';
 import { c, eyebrow, mono } from '../../lib/theme';
 import type { WorkItem } from '../../lib/workitem';
 
@@ -118,6 +122,7 @@ export function Related({
   /** Records the link in the ticket's conversation. Returns when it lands. */
   onPin: (text: string) => Promise<void>;
 }) {
+  const [links, setLinks] = useState<TicketLink[] | null>(null);
   const [hits, setHits] = useState<RelatedHit[] | null>(null);
   const [seed, setSeed] = useState('');
   const [total, setTotal] = useState(0);
@@ -127,7 +132,13 @@ export function Related({
 
   const load = useCallback(async () => {
     setHits(null);
+    setLinks(null);
     setError(null);
+    // Edges the ticket already has, read first and separately — these are
+    // facts, not proposals, and they must not be ranked in with guesses.
+    void getDetails(item.id)
+      .then(d => setLinks(linksFrom(d)))
+      .catch(() => setLinks([]));
     try {
       const r = await findRelated({
         id: item.id,
@@ -195,6 +206,56 @@ export function Related({
       ) : null}
 
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-4">
+        {/* Already linked. A pull request opened against this ticket becomes a
+            ticket of its own and is linked back, so this is where the PR shows
+            up — with a link out to the real thing on the code host. */}
+        {links && links.length > 0 ? (
+          <section className="mb-3">
+            <div className="flex items-baseline gap-1.5 px-2 py-1">
+              <span style={{ ...eyebrow, color: c.signal }}>Linked to this ticket</span>
+              <span style={{ fontFamily: mono, fontSize: '9px', color: c.mute }}>{links.length}</span>
+            </div>
+            <ul>
+              {links.map(l => (
+                <li
+                  key={`${l.direction}:${l.ticketId}`}
+                  className="flex items-start gap-2 rounded-md px-2 py-1.5"
+                  style={{ borderBottom: `1px solid ${c.line}` }}
+                >
+                  <span
+                    className="mt-0.5 grid size-5 shrink-0 place-items-center rounded"
+                    style={{ background: c.signalSoft, color: c.signal, fontSize: '10px' }}
+                    aria-hidden
+                  >
+                    {l.prUrl ? '⑂' : '▤'}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-[12.5px]" style={{ color: c.text }}>
+                      {l.title}
+                    </span>
+                    <span className="block text-[10.5px]" style={{ fontFamily: mono, color: c.mute }}>
+                      {l.xyneId ? `${l.xyneId} · ` : ''}
+                      {RELATION_LABEL[l.relation] ?? l.relation.toLowerCase()}
+                      {l.ticketType ? ` · ${l.ticketType.toLowerCase()}` : ''}
+                    </span>
+                  </span>
+                  {l.prUrl ? (
+                    <a
+                      href={l.prUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="shrink-0 rounded px-1.5 py-0.5 text-[10.5px]"
+                      style={{ color: c.signal, border: `1px solid ${c.signalSoft}`, background: c.signalSoft }}
+                    >
+                      Open PR ↗
+                    </a>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
+
         {hits === null ? (
           <p className="px-2 py-6 text-[12px]" style={{ color: c.mute }}>
             Looking across tickets, mail, files and calls…
@@ -204,7 +265,11 @@ export function Related({
             Nothing else in the workspace matches this ticket yet.
           </p>
         ) : (
-          groups.map(g => {
+          <>
+            <div className="px-2 pt-1 pb-0.5">
+              <span style={{ ...eyebrow, color: c.mute }}>Possibly related</span>
+            </div>
+            {groups.map(g => {
             const label = DOC_LABEL[g.docType]?.label ?? g.docType;
             return (
               <section key={g.docType} className="mb-3">
@@ -226,8 +291,9 @@ export function Related({
                   ))}
                 </ul>
               </section>
-            );
-          })
+              );
+            })}
+          </>
         )}
       </div>
     </div>

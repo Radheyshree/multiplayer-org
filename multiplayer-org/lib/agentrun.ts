@@ -102,6 +102,20 @@ export interface AgentOption {
   description: string;
   isDefault: boolean;
   color?: string;
+  /**
+   * The agent's user row in Spaces, when it has one.
+   *
+   * Agents wired into Spaces get a real user (`userType: 'APP'`) that appears
+   * in the directory like a person. That id is what makes an agent
+   * @-mentionable: a mention span points at a user id, and an automation with a
+   * MESSAGE_RECEIVED trigger can filter on it. Absent for agents that were
+   * never installed as a Spaces app — they are still dispatchable, just not
+   * addressable by name in a sentence.
+   *
+   * Not in the SDK's `ClawAgent` type; it arrives anyway, like the rest of the
+   * response (see the header).
+   */
+  spacesAppUserId?: string;
 }
 
 export async function listAgents(): Promise<AgentOption[]> {
@@ -111,31 +125,43 @@ export async function listAgents(): Promise<AgentOption[]> {
   // identity, so every `scope: "global"` agent in the deployment comes back),
   // and display names collide across orgs while slugs cannot.
   const bySlug = new Map<string, AgentOption>();
-  for (const a of raw) {
-    if (!a.slug || bySlug.has(a.slug)) continue;
-    bySlug.set(a.slug, {
-      slug: a.slug,
-      name: a.name || a.slug,
-      description: a.description || '',
+  for (const a of raw as unknown as Array<Record<string, unknown>>) {
+    const slug = typeof a.slug === 'string' ? a.slug : '';
+    if (!slug || bySlug.has(slug)) continue;
+    const appUser = typeof a.spacesAppUserId === 'string' ? a.spacesAppUserId : '';
+    bySlug.set(slug, {
+      slug,
+      name: typeof a.name === 'string' && a.name ? a.name : slug,
+      description: typeof a.description === 'string' ? a.description : '',
       isDefault: Boolean(a.isDefault),
-      ...(a.color ? { color: a.color } : {}),
+      ...(typeof a.color === 'string' && a.color ? { color: a.color } : {}),
+      ...(appUser ? { spacesAppUserId: appUser } : {}),
     });
   }
-  return [...bySlug.values()].sort(
-    (x, y) => Number(y.isDefault) - Number(x.isDefault) || x.name.localeCompare(y.name),
-  );
+  // ask-ai first for the same reason defaultAgent prefers it — the picker's
+  // first row and the default must agree, or the select looks wrong on open.
+  const rank = (a: AgentOption): number => (a.slug === 'ask-ai' ? 0 : a.isDefault ? 1 : 2);
+  return [...bySlug.values()].sort((x, y) => rank(x) - rank(y) || x.name.localeCompare(y.name));
 }
 
 /**
- * Pick a sensible agent when the user has not chosen one.
+ * Pick an agent when the user has not chosen one.
  *
- * `isDefault` is how claw-auth itself picks, so it comes first; the name/slug
- * heuristics only run when a deployment has flagged nothing.
+ * `ask-ai` first, deliberately, ahead of the deployment's own `isDefault` flag
+ * (which points at `assistant`). Two reasons, both from watching them work in
+ * this workspace: ask-ai is the agent people actually @-mention in Spaces
+ * threads, so its answers match what a reader is used to seeing on a ticket;
+ * and it follows an output contract cleanly, where `assistant` is a
+ * general-purpose chat agent whose replies are looser.
+ *
+ * The `isDefault` flag remains the fallback, so a deployment without ask-ai
+ * still gets whatever it nominated rather than an arbitrary first row.
  */
 export function defaultAgent(agents: AgentOption[]): AgentOption | null {
   return (
+    agents.find(a => a.slug === 'ask-ai') ??
     agents.find(a => a.isDefault) ??
-    agents.find(a => /^(assistant|ask-ai)$/.test(a.slug)) ??
+    agents.find(a => a.slug === 'assistant') ??
     agents[0] ??
     null
   );

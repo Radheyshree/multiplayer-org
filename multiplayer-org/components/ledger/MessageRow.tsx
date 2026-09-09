@@ -54,11 +54,28 @@ const GROUP_MS = 5 * 60 * 1000;
  * previous row being machinery — a status change between two of Priya's
  * messages should not make the second one look like a continuation.
  */
-export function startsGroup(m: LedgerMessage, prev: LedgerMessage | undefined): boolean {
+export function startsGroup(
+  m: LedgerMessage,
+  prev: LedgerMessage | undefined,
+  channel?: ChannelLike | null,
+): boolean {
   if (!prev) return true;
   if (prev.senderId !== m.senderId) return true;
   if (m.createdAt - prev.createdAt > GROUP_MS) return true;
-  return isRoutine(prev) !== isRoutine(m);
+  if (isRoutine(prev) !== isRoutine(m)) return true;
+  // A DIFFERENT SOURCE BREAKS THE GROUP, and this is the rule that matters.
+  //
+  // Slack-style grouping asks "is this the same person still talking", which is
+  // right in a chat app and wrong here: an app records a pull request, a call
+  // and three tickets in one burst — same sender id, same five minutes. Group
+  // those and every badge but the first disappears, leaving five anonymous
+  // lines and none of the provenance this surface exists to show.
+  //
+  // So a row's identity is (sender, source), not sender alone.
+  const a = parseUpdate(prev.content ?? '').appId;
+  const b = parseUpdate(m.content ?? '').appId;
+  if (a !== b) return true;
+  return sourceOf(prev, channel, a).label !== sourceOf(m, channel, b).label;
 }
 
 function ago(at: number): string {
@@ -176,7 +193,7 @@ export function MessageRow({
   const named = person.name !== m.senderId.slice(0, 8);
   const isAgent = m.msgType === 'BOT' && !appId && !named;
   const routine = isRoutine(m) || kind === 'activity';
-  const source = sourceOf(m, channel);
+  const source = sourceOf(m, channel, appId);
   const acts = actsOf(m.messageActs);
 
   // An ingested message is sent by a pseudo-bot user, so the directory resolves
@@ -190,7 +207,7 @@ export function MessageRow({
   const subtitle = ext ? ext.email : person.team || person.title || '';
   const subtitleTitle = ext ? undefined : [person.title, person.team].filter(Boolean).join(' · ');
 
-  const grouped = !startsGroup(m, previous);
+  const grouped = !startsGroup(m, previous, channel);
 
   return (
     <article

@@ -26,6 +26,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   allowedTargets,
   describeMoveError,
+  loadBoardChoices,
   loadBoardView,
   moveTicket,
   type Stage as BoardStage,
@@ -65,6 +66,9 @@ export function Board({ scope, postUpdate, focusTicket, focusedTicketId }: OrgAp
   /** The board's transition rules, so a drag can be refused before it is made. */
   const [transitions, setTransitions] = useState<StageTransition[]>([]);
   const [trackBoardId, setTrackBoardId] = useState('');
+  /** Every board mapped to the open track, and which one is showing. */
+  const [trackBoards, setTrackBoards] = useState<Array<{ boardId: string; name: string; isDefault: boolean }>>([]);
+  const [pickedBoardId, setPickedBoardId] = useState('');
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [nonLinear, setNonLinear] = useState(false);
   const [openId, setOpenId] = useState('');
@@ -122,7 +126,7 @@ export function Board({ scope, postUpdate, focusTicket, focusedTicketId }: OrgAp
       } else if (mode === 'track' && scope) {
         // listKanban filtered by sourceChannels — the board rows that belong to
         // THIS track, not every ticket on a board several tracks share.
-        const view = await loadBoardView(scope.channelId);
+        const view = await loadBoardView(scope.channelId, pickedBoardId || undefined);
         if (!view) {
           setStages([]);
           setBoardStages([]);
@@ -159,7 +163,23 @@ export function Board({ scope, postUpdate, focusTicket, focusedTicketId }: OrgAp
     } finally {
       setBusy(false);
     }
-  }, [mode, boardId, scope?.channelId, scope?.trackName]);
+  }, [mode, boardId, scope?.channelId, scope?.trackName, pickedBoardId]);
+
+  /**
+   * The track's boards.
+   *
+   * Loaded separately from the view because it is the answer to "why can't I
+   * see my ticket" — a channel can map to dozens of boards, and without this
+   * the surface silently shows one of them.
+   */
+  useEffect(() => {
+    if (!scope) {
+      setTrackBoards([]);
+      return;
+    }
+    setPickedBoardId('');
+    void loadBoardChoices(scope.channelId).then(setTrackBoards).catch(() => setTrackBoards([]));
+  }, [scope?.channelId]);
 
   useEffect(() => {
     void refresh();
@@ -336,6 +356,26 @@ export function Board({ scope, postUpdate, focusTicket, focusedTicketId }: OrgAp
               );
             })}
           </div>
+
+          {/* Which of the track's boards. Hidden when there is only one,
+              because a select with a single option is furniture. */}
+          {mode === 'track' && trackBoards.length > 1 && (
+            <select
+              value={pickedBoardId || trackBoardId}
+              onChange={e => setPickedBoardId(e.target.value)}
+              className="h-8 max-w-[15rem] rounded-md px-2 text-[12.5px] outline-none"
+              style={{ background: c.card, border: `1px solid ${c.line}` }}
+              aria-label="Which board on this track"
+              title={`${trackBoards.length} boards are mapped to #${scope?.trackName}`}
+            >
+              {trackBoards.map(b => (
+                <option key={b.boardId} value={b.boardId}>
+                  {b.name}
+                  {b.isDefault ? ' (default)' : ''}
+                </option>
+              ))}
+            </select>
+          )}
 
           {mode === 'board' && (
             <>

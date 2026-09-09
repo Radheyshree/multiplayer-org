@@ -150,6 +150,23 @@ function renderMarkdown(src: string): ReactNode[] {
   const key = { n: 0 };
   const lines = src.split('\n');
   lines.forEach((line, i) => {
+    // A pipe-table separator (`|---|---|`) carries no information for a reader
+    // and looks like a bug. Agents emit tables constantly, so this is not an
+    // edge case — drop the rule row and render the cells as a spaced line.
+    if (/^\s*\|?[\s:|-]*-[\s:|-]*\|?\s*$/.test(line) && line.includes('|')) return;
+    const row = /^\s*\|(.+)\|\s*$/.exec(line);
+    if (row) {
+      const cells = row[1].split('|').map(x => x.trim());
+      const inner: ReactNode[] = [];
+      cells.forEach((cell, ci) => {
+        if (ci) out.push(<span key={`sep${key.n++}`} style={{ color: c.mute }}>{' · '}</span>);
+        inlineMd(cell, inner, key);
+        out.push(...inner.splice(0));
+      });
+      if (i < lines.length - 1) out.push(<br key={`tbr${key.n++}`} />);
+      return;
+    }
+
     const heading = /^(#{1,6})\s+(.*)$/.exec(line);
     const bullet = /^\s*[-*+]\s+(.*)$/.exec(line);
     if (heading) {

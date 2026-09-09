@@ -114,8 +114,21 @@ export async function loadTickets(projectId: string, channelId: string): Promise
 
 /** The ticket's one common chat, oldest first. */
 export async function loadThread(conversationId: string): Promise<Message[]> {
-  const page = await spaces.messages.listByConversation(conversationId, { limit: 100 });
-  return [...page.items].sort((a, b) => a.createdAt - b.createdAt);
+  const first = await spaces.messages.listByConversation(conversationId, { limit: 100 });
+  const all = [...first.items];
+  // Page it. A ticket worked on for a month passes a hundred messages easily,
+  // and the single-page read silently dropped the OLDEST — which is exactly the
+  // part of the record somebody scrolls back for. Bounded at 600: a ledger is
+  // read, not audited, and six pages is already past what anyone scrolls.
+  const meta = first as unknown as { hasMore?: boolean; total?: number };
+  if (meta.hasMore && (meta.total ?? 0) > all.length) {
+    for (let offset = all.length; offset < Math.min(meta.total ?? 0, 600); offset += 100) {
+      const next = await spaces.messages.listByConversation(conversationId, { limit: 100, offset });
+      if (!next.items.length) break;
+      all.push(...next.items);
+    }
+  }
+  return all.sort((a, b) => a.createdAt - b.createdAt);
 }
 
 /**

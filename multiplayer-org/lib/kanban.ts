@@ -26,6 +26,8 @@ export interface BoardView {
   transitions: StageTransition[];
   /** Tickets per stage name. */
   columns: Map<string, Ticket[]>;
+  /** Every board this channel maps to — often far more than one. */
+  mappings: ChannelBoardMapping[];
 }
 
 /**
@@ -40,11 +42,26 @@ function firstOrNull(raw: unknown): Board | null {
 }
 
 /** Resolve the track's board and load every column. */
-export async function loadBoardView(channelId: string): Promise<BoardView | null> {
+export async function loadBoardView(
+  channelId: string,
+  /**
+   * Which board to open. Omit for the channel's default.
+   *
+   * Not a nicety. `vespa-search` maps to TWENTY-EIGHT boards: the default is a
+   * general work board, while the tickets carrying pull requests live on a
+   * separate SDLC board (TODO -> IN_REVIEW -> MERGED -> LIVE). Showing only the
+   * default meant a ticket could be on the open track, be linked to a PR, and
+   * still be invisible here — exactly the failure this surface exists to stop.
+   */
+  boardIdOverride?: string,
+): Promise<BoardView | null> {
   // Mapping rows, not boards. A channel may map to several; ordering is by when
   // the mapping was made, so isDefault is NOT reliably index 0.
   const mappings: ChannelBoardMapping[] = await spaces.boards.listByChannel(channelId);
-  const mapping = mappings.find((m) => m.isDefault) ?? mappings[0];
+  const mapping =
+    (boardIdOverride ? mappings.find((m) => m.boardId === boardIdOverride) : undefined) ??
+    mappings.find((m) => m.isDefault) ??
+    mappings[0];
   if (!mapping) return null;
 
   const boardId = mapping.boardId;
@@ -82,7 +99,29 @@ export async function loadBoardView(channelId: string): Promise<BoardView | null
     );
   });
 
-  return { board: firstOrNull(boardRaw), boardId, stages, transitions, columns };
+  return { board: firstOrNull(boardRaw), boardId, stages, transitions, columns, mappings };
+}
+
+/**
+ * Every board this track is mapped to, named.
+ *
+ * `listByChannel` returns mapping rows carrying only ids, so names need a
+ * second read. `allSettled` because a mapping can point at a deleted board and
+ * one 404 must not blank the picker.
+ */
+export async function loadBoardChoices(
+  channelId: string,
+): Promise<Array<{ boardId: string; name: string; isDefault: boolean }>> {
+  const mappings: ChannelBoardMapping[] = await spaces.boards.listByChannel(channelId);
+  const named = await Promise.allSettled(
+    mappings.map(async (m) => {
+      const b = firstOrNull(await spaces.boards.get(m.boardId));
+      return { boardId: m.boardId, name: b?.name || m.boardId.slice(0, 8), isDefault: m.isDefault };
+    }),
+  );
+  return named
+    .flatMap((r) => (r.status === 'fulfilled' ? [r.value] : []))
+    .sort((a, b) => Number(b.isDefault) - Number(a.isDefault) || a.name.localeCompare(b.name));
 }
 
 /** Stages this ticket may legally move to, per the board's transition set. */

@@ -136,7 +136,31 @@ const XYNE: Source = { id: 'xyne', label: 'via Xyne', glyph: '◇' };
  * It is the only thing that can tell a slack-desk message from an email, and
  * the only signal the real dashboard trusts for that.
  */
-export function sourceOf(m: MessageLike, channel?: ChannelLike | null): Source {
+/**
+ * Which surface an app id speaks for.
+ *
+ * Our own entries carry `[app:<id>|kind]` in the body rather than in metadata,
+ * because the server drops metadata on write. That marker IS provenance: when
+ * the code browser records a pull request, the line did not come from Xyne, it
+ * came from GitHub, and badging it "via Xyne" throws away the only interesting
+ * thing about it.
+ *
+ * Only apps that genuinely relay another system appear here. `kanban-board` and
+ * `xyne-chat` act on Xyne's own data, so they stay unmapped and fall through to
+ * the Xyne badge, which is the truth for them.
+ */
+const APP_SOURCE: Record<string, { id: SourceId; label: string; glyph: string }> = {
+  github: { id: 'code', label: 'via code host', glyph: '\u2442' },
+  'xyne-scribe': { id: 'call', label: 'via Call', glyph: '\u25c9' },
+  'xyne-desk': { id: 'email', label: 'via Email', glyph: '\u2709' },
+};
+
+export function sourceOf(
+  m: MessageLike,
+  channel?: ChannelLike | null,
+  /** The app id from the body marker, when the caller already parsed it. */
+  appId?: string | null,
+): Source {
   const md = asMeta(m);
 
   // 1. A code host spoke. The only origin that ships a URL, so the only badge
@@ -178,6 +202,18 @@ export function sourceOf(m: MessageLike, channel?: ChannelLike | null): Source {
       glyph: hit.glyph,
       ...(web ? { href: web } : {}),
       ...(str(md.eventType) ? { detail: str(md.eventType) } : {}),
+    };
+  }
+
+  // 2b. One of our own surfaces recorded this on another system's behalf. A URL
+  //     in the body, if there is one, names the host precisely.
+  const viaApp = appId ? APP_SOURCE[appId] : undefined;
+  if (viaApp) {
+    const url = /https?:\/\/\S+/.exec(m.content ?? '')?.[0]?.replace(/[)>,.]+$/, '');
+    return {
+      ...viaApp,
+      ...(viaApp.id === 'code' && url ? { label: codeHost(url) } : {}),
+      ...(url ? { href: url } : {}),
     };
   }
 

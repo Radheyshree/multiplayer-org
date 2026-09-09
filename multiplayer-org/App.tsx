@@ -1108,6 +1108,9 @@ npm run dev`}
           busy={busy}
           {...(ticket?.description ? { description: ticket.description } : {})}
           onSend={async text => void (await postFromPerson(text))}
+          onRecord={async (text, kind) => {
+            if (tabTicket) await postFromApp(tabTicket, text, kind);
+          }}
           onRefresh={refreshThread}
         />
       </aside>
