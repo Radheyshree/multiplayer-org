@@ -1,14 +1,22 @@
 import { spaces, xyne } from './xyne';
-import {
-  type Board,
-  type ChannelBoardMapping,
-  // Aliased. The SDK's `Stage`/`Ticket` are the full 30-field server rows; the
-  // narrower shapes this file declares under the same names are what every
-  // surface actually passes around. Both are needed here now that the kanban
-  // reader lives alongside them, so the SDK's keep their origin in their name.
-  type Stage as SdkStage,
-  type StageTransition,
-  type Ticket as SdkTicket,
+// `import type`, not `import { type … }`. Both are erased by tsc, but the
+// published app is compiled by claw's own transformer, and this is the only
+// place any file names an npm package that is not installed in the sandbox —
+// the CLI's scaffold says it plainly: "App code imports the bundles by relative
+// path, never these packages by name." A statement marked `import type` is
+// removed unconditionally by every transformer; one that merely marks each
+// specifier relies on the transformer noticing none are used as values.
+//
+// Aliased because the SDK's `Stage`/`Ticket` are the full 30-field server rows,
+// while the narrower shapes this file declares under the same names are what
+// every surface actually passes around. Both are needed here now that the
+// kanban reader lives alongside them, so the SDK's keep their origin in the name.
+import type {
+  Board,
+  ChannelBoardMapping,
+  Stage as SdkStage,
+  StageTransition,
+  Ticket as SdkTicket,
 } from '@xyne/spaces-sdk';
 
 /* ---- from lib/tickets.ts ---------------------------------------------- */

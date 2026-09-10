@@ -300,10 +300,32 @@ export const ORG_APPS: OrgApp[] = [
   },
 ];
 
+/**
+ * Are we running from a dev server rather than inside Spaces?
+ *
+ * NOT `import.meta.env.DEV`, which is what this used to be. Claw compiles each
+ * app file into a NON-MODULE context, where `import.meta` is a syntax error —
+ * the published app died on load with "Cannot use 'import.meta' outside a
+ * module" before a single component rendered. vite.config.ts already says the
+ * sandbox rejects it; this was the one place left that still used it.
+ *
+ * The hostname is the honest substitute: it needs no build-time substitution, it
+ * is a plain property read in any context, and being wrong about it costs a
+ * console warning rather than anything a user sees.
+ */
+const LOCAL = /^(localhost|127\.0\.0\.1|\[::1\])$/;
+const isDevServer = (): boolean => {
+  try {
+    return typeof location !== 'undefined' && LOCAL.test(location.hostname);
+  } catch {
+    return false;
+  }
+};
+
 // Fails loudly in dev if the store and the registry have drifted apart. Not a
 // throw: a mismatched id should not blank the app during a demo, it should tell
 // whoever is looking at the console what to fix.
-if (import.meta.env?.DEV) {
+if (isDevServer()) {
   const { missing, stale } = catalogueDrift(ORG_APPS.map((a) => a.id));
   if (missing.length) console.warn('[orgApps] mounted but not in the store:', missing);
   if (stale.length) console.warn('[orgApps] marked live in the store but not mounted:', stale);

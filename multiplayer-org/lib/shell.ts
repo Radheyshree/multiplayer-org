@@ -1,5 +1,8 @@
 import { spaces, token, xyne } from './xyne';
-import { type Channel, type ClawAgent, type CurrentUser, type Message, type Project, type Ticket, type User, type Workflow } from '@xyne/spaces-sdk';
+// `import type` so claw's transformer drops the statement outright — the SDK is
+// not an installed package in the sandbox, only a relative bundle under
+// lib/vendor. See the same note in lib/tickets.ts.
+import type { Channel, ClawAgent, CurrentUser, Message, Project, Ticket, User, Workflow } from '@xyne/spaces-sdk';
 
 /* ---- from lib/org.ts -------------------------------------------------- */
 /**
