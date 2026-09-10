@@ -1,3 +1,37 @@
+import * as React from 'react';
+import * as ReactDOM from 'react-dom';
+import * as ReactDOMClient from 'react-dom/client';
+import * as accordion from '../components/ui/accordion';
+import * as alert from '../components/ui/alert';
+import * as avatar from '../components/ui/avatar';
+import * as badge from '../components/ui/badge';
+import * as button from '../components/ui/button';
+import * as card from '../components/ui/card';
+import * as checkbox from '../components/ui/checkbox';
+import * as dialog from '../components/ui/dialog';
+import * as dropdownMenu from '../components/ui/dropdown-menu';
+import * as input from '../components/ui/input';
+import * as label from '../components/ui/label';
+import * as lucide from 'lucide-react';
+import * as popover from '../components/ui/popover';
+import * as progress from '../components/ui/progress';
+import * as scrollArea from '../components/ui/scroll-area';
+import * as select from '../components/ui/select';
+import * as separator from '../components/ui/separator';
+import * as sheet from '../components/ui/sheet';
+import * as skeleton from '../components/ui/skeleton';
+import * as switchUi from '../components/ui/switch';
+import * as table from '../components/ui/table';
+import * as tabs from '../components/ui/tabs';
+import * as textarea from '../components/ui/textarea';
+import * as tooltip from '../components/ui/tooltip';
+import { clsx } from 'clsx';
+import { cn } from './utils';
+import { cva } from 'class-variance-authority';
+import { spaces, storage, xyne } from './xyne';
+import { twMerge } from 'tailwind-merge';
+
+/* ---- from lib/studioProtocol.ts --------------------------------------- */
 /**
  * The contract between Studio and a Claw agent.
  *
@@ -234,7 +268,6 @@ export const RUNTIME_NOTES = `AVAILABLE IMPORTS (nothing else resolves):
   ./lib/utils                  — { cn } for class merging
   clsx · tailwind-merge · class-variance-authority
   xyne                         — LIVE WORKSPACE DATA, in the Studio preview.
-                                 import { xyne } from 'xyne';
                                  const { spaces, storage } = await xyne();
                                  spaces.search.query · spaces.tickets · spaces.channels ·
                                  spaces.conversations · spaces.messages · spaces.users ·
@@ -350,4 +383,474 @@ export function langFor(path: string): string {
   if (path.endsWith('.css')) return 'css';
   if (path.endsWith('.json')) return 'json';
   return 'js';
+}
+
+/* ---- from lib/studioHost.ts ------------------------------------------- */
+/**
+ * The module graph a generated app is allowed to import.
+ *
+ * A generated app is not bundled — it is transpiled and evaluated inside this
+ * document (see lib/studioRuntime.ts), so `import` has to resolve against
+ * something we hold in hand. This is that something: real module objects, the
+ * same ones Studio itself renders with.
+ *
+ * Two consequences worth stating, because they are the point rather than a
+ * side effect:
+ *
+ *  - Generated code shares OUR React. There is no second copy, so hooks work
+ *    and a preview can hand components back across the boundary.
+ *  - `xyne` is the live data layer. An app generated here can read the viewer's
+ *    real tickets, channels and search results in the preview, before it has
+ *    been saved anywhere. That is the difference between a mockup and a thing.
+ *
+ * Everything here already exists in a published Space: shadcn/ui and `cn` are
+ * injected by the host, and lucide/clsx/cva/tailwind-merge are in the sandbox's
+ * BASE_DEPENDENCIES, so none of it needs a manifest entry.
+ */
+
+
+
+/** Bare specifiers. */
+const PACKAGES: Record<string, unknown> = {
+  react: React,
+  'react-dom': ReactDOM,
+  'react-dom/client': ReactDOMClient,
+  'lucide-react': lucide,
+  clsx: { clsx, default: clsx },
+  'tailwind-merge': { twMerge, default: twMerge },
+  'class-variance-authority': { cva },
+  xyne: { xyne, spaces, storage, default: xyne },
+};
+
+/** Host-provided paths. Keyed without extension; the resolver strips them. */
+const PROVIDED: Record<string, unknown> = {
+  '/lib/utils': { cn },
+  '/components/ui/accordion': accordion,
+  '/components/ui/alert': alert,
+  '/components/ui/avatar': avatar,
+  '/components/ui/badge': badge,
+  '/components/ui/button': button,
+  '/components/ui/card': card,
+  '/components/ui/checkbox': checkbox,
+  '/components/ui/dialog': dialog,
+  '/components/ui/dropdown-menu': dropdownMenu,
+  '/components/ui/input': input,
+  '/components/ui/label': label,
+  '/components/ui/popover': popover,
+  '/components/ui/progress': progress,
+  '/components/ui/scroll-area': scrollArea,
+  '/components/ui/select': select,
+  '/components/ui/separator': separator,
+  '/components/ui/sheet': sheet,
+  '/components/ui/skeleton': skeleton,
+  '/components/ui/switch': switchUi,
+  '/components/ui/table': table,
+  '/components/ui/tabs': tabs,
+  '/components/ui/textarea': textarea,
+  '/components/ui/tooltip': tooltip,
+};
+
+/** React itself, injected into every evaluated module for the classic JSX transform. */
+export const hostReact = React;
+
+/** Resolve a specifier the host owns, or undefined if the app must provide it. */
+export function resolveHostModule(specifier: string, fromDir: string): unknown {
+  if (specifier in PACKAGES) return PACKAGES[specifier];
+
+  const absolute = specifier.startsWith('.') ? joinPath(fromDir, specifier) : specifier;
+  const bare = absolute.replace(/\.[jt]sx?$/, '');
+  return PROVIDED[bare];
+}
+
+/** POSIX-ish join for the virtual file tree. No `..` beyond the root. */
+export function joinPath(fromDir: string, specifier: string): string {
+  const parts = `${fromDir}/${specifier}`.split('/');
+  const out: string[] = [];
+  for (const part of parts) {
+    if (!part || part === '.') continue;
+    if (part === '..') out.pop();
+    else out.push(part);
+  }
+  return `/${out.join('/')}`;
+}
+
+/** Names offered to the model, and shown in the UI so the contract is visible. */
+export const HOST_MODULE_NAMES = [...Object.keys(PACKAGES), ...Object.keys(PROVIDED)];
+
+/* ---- from lib/studioClaw.ts ------------------------------------------- */
+/**
+ * Studio's transport to Claw.
+ *
+ * Not a second copy of lib/chat.ts's wrapper: that one dispatches an agent INTO
+ * a Spaces thread and returns when it finishes, which is the right shape for a
+ * chat surface and the wrong one here. Studio needs the run's progress while it
+ * is happening, a conversation that survives across turns, and the ability to
+ * abandon a turn without killing the run. Different job, different module.
+ *
+ * Three facts this is built on, each verified live against the workspace rather
+ * than read off the SDK types:
+ *
+ *  1. `getRun` returns far more than the SDK declares. The type says
+ *     `{ sessionId, status, result?, error? }`; the endpoint actually returns
+ *     the whole AgentRun row — `currentToolLabel`, `toolInvocations`,
+ *     `reasoning`, `toolsUsed`, token counts, timings. The registry sets no
+ *     mapResult on getRun, so the extra fields pass straight through and the
+ *     progress UI is free. (Filed for SDK-GAPS.)
+ *
+ *  2. `result` does NOT stream. It is empty for the whole run and lands whole at
+ *     the terminal poll — measured at 0 bytes for 51s, then 4,872 bytes at 66s.
+ *     So there is no token-by-token text to show, and a progress UI that
+ *     pretends otherwise would be lying. `currentToolLabel` and the invocation
+ *     count are the honest signals, and they DO move.
+ *
+ *  3. Passing our own `conversationId` gives real multi-turn memory. Verified:
+ *     a value stated in one run was recalled by a second, separate run carrying
+ *     the same id. Nothing in the SDK docs says this. It is what makes followups
+ *     a conversation rather than a series of strangers.
+ */
+
+export type StudioAgent = {
+  slug: string;
+  name: string;
+  description: string;
+  color?: string;
+  isDefault?: boolean;
+};
+
+/** One tool call, as the runtime records it. Shape is loose by necessity. */
+export type Invocation = { toolName?: string; args?: unknown; result?: unknown; status?: string };
+
+/** What a poll can tell us. Everything optional — a run in flight has almost none of it. */
+export type RunProgress = {
+  status: string;
+  label: string | null;
+  invocations: Invocation[];
+  reasoning: string;
+  result: string;
+  error: string | null;
+  /** Wall-clock since dispatch, seconds. The only number that always moves. */
+  elapsedS: number;
+  tokensOut?: number;
+};
+
+const TERMINAL = ['completed', 'failed', 'cancelled', 'canceled', 'error'];
+
+export function isTerminal(status: string): boolean {
+  return TERMINAL.includes(status);
+}
+
+/**
+ * The agent roster.
+ *
+ * 214 agents in this workspace, many of them one-off copies sharing a display
+ * name, so dedupe on slug and put the ones that can actually build an app in
+ * front. The rest stay reachable — an agent that knows a codebase writes a
+ * better app about that codebase than a generalist does.
+ */
+export async function listStudioAgents(): Promise<StudioAgent[]> {
+  const { spaces } = await xyne();
+  const raw = (await spaces.claw.listAgents()) as unknown as Array<Record<string, unknown>>;
+  const seen = new Set<string>();
+  const out: StudioAgent[] = [];
+  for (const a of raw) {
+    const slug = String(a['slug'] ?? a['id'] ?? '');
+    if (!slug || seen.has(slug)) continue;
+    seen.add(slug);
+    out.push({
+      slug,
+      name: String(a['name'] ?? slug),
+      description: String(a['description'] ?? ''),
+      ...(typeof a['color'] === 'string' ? { color: a['color'] } : {}),
+      ...(a['isDefault'] === true ? { isDefault: true } : {}),
+    });
+  }
+  return out.sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
+}
+
+/**
+ * Generalists first — they follow a format instruction cleanly, which is what
+ * this contract lives or dies on.
+ *
+ * `ask-ai` leads deliberately. It is the workspace assistant the rest of Xyne
+ * already routes through, so it is the one people recognise and the one whose
+ * behaviour is best understood here.
+ */
+const PREFERRED = ['ask-ai', 'assistant', 'dictator', 'frontend-engineer', 'fe-autocoder', 'claw'];
+function rank(agent: StudioAgent): number {
+  const i = PREFERRED.indexOf(agent.slug);
+  if (i !== -1) return i;
+  return agent.isDefault ? PREFERRED.length : PREFERRED.length + 1;
+}
+
+/** The agent Studio starts on, if the workspace has it. */
+export function defaultAgent(agents: StudioAgent[]): string {
+  return agents.find(a => PREFERRED.includes(a.slug))?.slug ?? agents[0]?.slug ?? 'assistant';
+}
+
+export type StartedRun = { sessionId: string };
+
+/**
+ * Dispatch a turn.
+ *
+ * `channelId` is deliberately never passed: supplying one makes the agent post
+ * its reply into a real Spaces channel, and a design iteration is not something
+ * anyone wants in their workspace feed.
+ */
+export async function startRun(input: {
+  agent: string;
+  task: string;
+  conversationId: string;
+}): Promise<StartedRun> {
+  const { spaces } = await xyne();
+  const { sessionId } = await spaces.claw.run({
+    agent: input.agent,
+    task: input.task,
+    conversationId: input.conversationId,
+  });
+  return { sessionId };
+}
+
+/** One poll. Widened from the SDK's narrow type — see the header, note 1. */
+export async function pollRun(sessionId: string, startedAt: number): Promise<RunProgress> {
+  const { spaces } = await xyne();
+  const run = (await spaces.claw.getRun(sessionId)) as unknown as Record<string, unknown>;
+  const invocations = Array.isArray(run['toolInvocations']) ? (run['toolInvocations'] as Invocation[]) : [];
+  return {
+    status: String(run['status'] ?? 'running'),
+    label: typeof run['currentToolLabel'] === 'string' ? run['currentToolLabel'] : null,
+    invocations,
+    reasoning: typeof run['reasoning'] === 'string' ? run['reasoning'] : '',
+    result: typeof run['result'] === 'string' ? run['result'] : '',
+    error: typeof run['error'] === 'string' ? run['error'] : null,
+    elapsedS: Math.round((Date.now() - startedAt) / 1000),
+    ...(typeof run['tokensOut'] === 'number' ? { tokensOut: run['tokensOut'] } : {}),
+  };
+}
+
+/**
+ * Dispatch and follow a turn to its end.
+ *
+ * Not `runAndWait`: that helper swallows everything between dispatch and the
+ * terminal poll, and everything Studio shows while an agent works lives in
+ * exactly that gap. It also throws on timeout while the run keeps going, which
+ * would strand a result the user is waiting on.
+ *
+ * `abort` stops WATCHING, never the run. A user who navigates away and comes
+ * back can be handed the finished result, because the session id outlives the
+ * component.
+ */
+export async function runTurn(input: {
+  agent: string;
+  task: string;
+  conversationId: string;
+  onProgress: (progress: RunProgress, sessionId: string) => void;
+  signal?: AbortSignal;
+  /**
+   * When the WATCHER gives up. The run itself continues regardless.
+   *
+   * Fifteen minutes, not the SDK's five: a measured run that reached for its
+   * file tools took over 299s before replying, and abandoning a turn that is
+   * still working loses nothing but costs the user the result.
+   */
+  timeoutMs?: number;
+}): Promise<RunProgress> {
+  const startedAt = Date.now();
+  const { sessionId } = await startRun(input);
+  const deadline = startedAt + (input.timeoutMs ?? 900_000);
+
+  // Hand the session id back BEFORE the first poll. The caller persists it on
+  // the first progress callback, and if every poll then fails — a flaky
+  // network, a tab suspended for minutes — the id is already saved and the run
+  // can be re-attached to. Reporting it only via a successful poll means a run
+  // that dispatched fine becomes permanently unreachable the moment the first
+  // read fails.
+  input.onProgress(
+    { status: 'starting', label: null, invocations: [], reasoning: '', result: '', error: null, elapsedS: 0 },
+    sessionId,
+  );
+
+  // Sub-second polling would spend requests to learn nothing: the run's own
+  // writes are debounced server-side, so nothing changes faster than this.
+  const INTERVAL_MS = 1_500;
+
+  for (;;) {
+    if (input.signal?.aborted) {
+      throw Object.assign(new Error('Stopped watching this run.'), { sessionId, watcherOnly: true });
+    }
+    await sleep(INTERVAL_MS);
+
+    let progress: RunProgress;
+    try {
+      progress = await pollRun(sessionId, startedAt);
+    } catch (err) {
+      // A dropped poll is not a dropped run. Keep trying until the deadline.
+      if (Date.now() > deadline) throw Object.assign(err as Error, { sessionId, watcherOnly: true });
+      continue;
+    }
+
+    input.onProgress(progress, sessionId);
+    if (isTerminal(progress.status)) return progress;
+
+    if (Date.now() > deadline) {
+      throw Object.assign(new Error('The agent is taking unusually long.'), { sessionId, watcherOnly: true });
+    }
+  }
+}
+
+/** Re-attach to a run started earlier — after a reload, or a surface switch. */
+export async function resumeRun(input: {
+  sessionId: string;
+  startedAt: number;
+  onProgress: (progress: RunProgress, sessionId: string) => void;
+  signal?: AbortSignal;
+}): Promise<RunProgress> {
+  for (;;) {
+    if (input.signal?.aborted) {
+      throw Object.assign(new Error('Stopped watching this run.'), { watcherOnly: true });
+    }
+    const progress = await pollRun(input.sessionId, input.startedAt);
+    input.onProgress(progress, input.sessionId);
+    if (isTerminal(progress.status)) return progress;
+    await sleep(1_500);
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/* ---- from lib/studioDeploy.ts ----------------------------------------- */
+/**
+ * Turning a Studio project into a real Xyne app.
+ *
+ * The route is the same one `spaces app publish` uses. The CLI's own module
+ * (@xyne/spaces-cli/dist/claw.js) notes that artifact-apps is "one of the few
+ * claw-auth routers mounted WITHOUT the access-token barrier" — it takes plain
+ * cookie auth, forwarded to Spaces /api/auth/me. Published, our fetch shim
+ * tunnels /claw/* to the host, which performs it same-origin as the signed-in
+ * viewer. So an app can create an app, with no new credential.
+ *
+ * That is NOT the self-replication ban being circumvented. The ban stops an
+ * app's AGENT from calling the create-app tool, because an agent that can spawn
+ * an agent is an unkillable chain. This is a person clicking a button. Different
+ * mechanism, different risk, and the ban's own comment scopes itself to the
+ * former.
+ *
+ * TWO PROPERTIES THAT SHAPE THE UI, both load-bearing:
+ *
+ *  1. THERE IS NO DELETE. The router exposes create, version, publish,
+ *     unpublish and restore — and nothing that removes an app. `unpublish` only
+ *     makes a published app private again; the row survives forever. So Studio
+ *     creates UNPUBLISHED and never publishes without a second, explicit act,
+ *     and says so in the UI rather than only in a comment.
+ *
+ *  2. IT RUNS AS THE VIEWER. Anyone who opens Studio and deploys creates a row
+ *     under their own identity, in their own workspace.
+ *
+ * Local dev cannot reach any of this: claw-auth wants a session cookie, and a
+ * dev server has only a bearer token — verified, /artifact-apps answers 401
+ * there. `canDeploy()` is that check, not a feature flag.
+ */
+
+const API = '/claw/api/v1/artifact-apps';
+
+export type DeployPayload = {
+  title: string;
+  entry: string;
+  files: StudioFile[];
+  dependencies?: Record<string, string>;
+};
+
+export type DeployedApp = { appId: string; versionId: string; versionNumber: number };
+
+/** Only published, where the host tunnels /claw/* with the viewer's cookies. */
+export function canDeploy(): boolean {
+  return typeof window !== 'undefined' && window.parent !== window;
+}
+
+/**
+ * Exactly what a deploy would send.
+ *
+ * Exposed so the UI can show the payload without creating anything — the safe
+ * half of the button, and the one to reach for when you want to demonstrate the
+ * capability rather than exercise it.
+ */
+export function buildPayload(input: {
+  title: string;
+  entry: string;
+  files: StudioFile[];
+  dependencies?: Record<string, string>;
+}): DeployPayload {
+  return {
+    title: input.title.slice(0, 120),
+    entry: input.entry,
+    files: input.files,
+    ...(input.dependencies && Object.keys(input.dependencies).length
+      ? { dependencies: input.dependencies }
+      : {}),
+  };
+}
+
+async function call<T>(path: string, init: RequestInit): Promise<T> {
+  const res = await fetch(`${API}${path}`, {
+    ...init,
+    headers: { 'Content-Type': 'application/json', ...(init.headers ?? {}) },
+  });
+  const text = await res.text();
+  let body: unknown;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    body = text;
+  }
+  if (!res.ok) {
+    const error = (body as { error?: string })?.error ?? `HTTP ${res.status}`;
+    throw new Error(error);
+  }
+  return body as T;
+}
+
+/** Create the app. Private to the caller until `publish` is called separately. */
+export async function createApp(payload: DeployPayload): Promise<DeployedApp> {
+  const body = await call<{ app: { id: string; versions: Array<{ id: string; versionNumber: number }> } }>(
+    '',
+    { method: 'POST', body: JSON.stringify(payload) },
+  );
+  const version = body.app.versions[0];
+  return { appId: body.app.id, versionId: version.id, versionNumber: version.versionNumber };
+}
+
+/** Append a version to an app this viewer owns. */
+export async function pushVersion(appId: string, payload: DeployPayload): Promise<DeployedApp> {
+  const body = await call<{ version: { id: string; versionNumber: number } }>(
+    `/${encodeURIComponent(appId)}/versions`,
+    { method: 'POST', body: JSON.stringify(payload) },
+  );
+  return { appId, versionId: body.version.id, versionNumber: body.version.versionNumber };
+}
+
+/** Pin a version and make the app visible to the workspace. Reversible via unpublish. */
+export async function publishApp(appId: string, versionId: string): Promise<void> {
+  await call(`/${encodeURIComponent(appId)}/publish`, {
+    method: 'POST',
+    body: JSON.stringify({ versionId }),
+  });
+}
+
+export async function unpublishApp(appId: string): Promise<void> {
+  await call(`/${encodeURIComponent(appId)}/unpublish`, { method: 'POST' });
+}
+
+/** Pull an existing app's files — the import half, so Studio can remix. */
+export async function pullApp(appId: string, versionId?: string): Promise<{ title: string; entry: string; files: StudioFile[] }> {
+  const query = versionId ? `?versionId=${encodeURIComponent(versionId)}` : '';
+  return call(`/${encodeURIComponent(appId)}/payload${query}`, { method: 'GET' });
+}
+
+export type AppSummary = { id: string; title: string; visibility?: string; ownerName?: string | null };
+
+/** Apps this viewer owns, for the import picker. */
+export async function listApps(scope: 'mine' | 'workspace' = 'mine'): Promise<AppSummary[]> {
+  const body = await call<{ apps: AppSummary[] }>(`?scope=${scope}`, { method: 'GET' });
+  return Array.isArray(body.apps) ? body.apps : [];
 }

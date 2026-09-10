@@ -20,9 +20,9 @@
  */
 import { useEffect, useState } from 'react';
 import { loadDirectory, nameOf, resolvePeople } from '../../lib/people';
-import { RichText, toPreview } from '../RichText';
+import { RichText, toPreview } from '../shared';
 import { c, eyebrow, mono } from '../../lib/theme';
-import { toWorkItem } from '../../lib/workitem';
+import { toWorkItem } from '../../lib/shell';
 import type { OrgAppProps } from '../../orgApps/registry';
 import { xyne } from '../../lib/xyne';
 

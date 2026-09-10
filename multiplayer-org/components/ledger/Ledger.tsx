@@ -21,7 +21,7 @@
  * happened, with the same provenance treatment as a human's.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { matchesLayer, parseUpdate, type Layer } from '../../lib/appUpdate';
+import { matchesLayer, parseUpdate, type Layer } from '../../lib/origin';
 import {
   defaultAgent,
   dispatch,
@@ -43,19 +43,19 @@ import {
   writeState,
   type WatchMessage,
   type WatchState,
-} from '../../lib/watcher';
-import type { ChannelLike } from '../../lib/provenance';
+} from '../../lib/agentrun';
+import type { ChannelLike } from '../../lib/origin';
 import { c, eyebrow, mono } from '../../lib/theme';
-import type { WorkItem } from '../../lib/workitem';
-import { agentsMentioned, mentionables, type Mentionable } from '../../lib/mentions';
-import { AgentActivity } from './AgentActivity';
-import { Composer } from './Composer';
+import type { WorkItem } from '../../lib/shell';
+import { agentsMentioned, mentionables, type Mentionable } from '../../lib/people';
+import { AgentActivity } from './parts';
+import { Composer } from './parts';
 import { MessageRow, type LedgerMessage } from './MessageRow';
 import { Related } from './Related';
-import { Surfaces } from './Surfaces';
-import { learnFrom, loadMailThread, type MailThread } from '../../lib/mailthread';
-import { MailBridge } from './MailBridge';
-import { UpdateAgent } from './UpdateAgent';
+import { Surfaces } from './badges';
+import { learnFrom, loadMailThread, type MailThread } from '../../lib/mailbridge';
+import { MailBridge } from './parts';
+import { UpdateAgent } from './parts';
 import {
   applySuggestion,
   alreadyAsked,
@@ -74,7 +74,7 @@ import {
   type ThreadMessage,
   type TicketRow,
 } from '../../lib/nudge';
-import { mentionHtml } from '../../lib/mentions';
+import { mentionHtml } from '../../lib/people';
 import {
   bridge as makeBridge,
   bridgesInThread,

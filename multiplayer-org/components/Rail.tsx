@@ -26,8 +26,8 @@ import {
   ChevronLeft, ChevronRight, Hash, Plus, Store,
   MessageSquare, BarChart3, Search, Folder,
 } from 'lucide-react';
-import type { ProjectTree, Ticket } from '../lib/org';
-import { humanize } from '../lib/directory';
+import type { ProjectTree, Ticket } from '../lib/shell';
+import { humanize } from '../lib/shell';
 import { Input } from './ui/input';
 
 export type RailView = 'projects' | 'create' | 'store' | 'dm' | 'insights';

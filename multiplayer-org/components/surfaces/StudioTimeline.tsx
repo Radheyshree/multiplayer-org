@@ -24,10 +24,10 @@
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { c, eyebrow, mono } from '../../lib/theme';
-import type { RunProgress } from '../../lib/studioClaw';
+import type { RunProgress } from '../../lib/studioProtocol';
 import type { StudioFile } from '../../lib/studioProtocol';
-import type { Turn, TurnAction } from '../../lib/studioStore';
-import { Ring, riseIn } from './StudioFx';
+import type { Turn, TurnAction } from '../../lib/studioRuntime';
+import { Ring, riseIn } from './StudioCode';
 
 /** Always-true suggestions, dealt in when the file-derived ones run out. */
 const EVERGREEN = [

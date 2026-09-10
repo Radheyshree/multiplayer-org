@@ -52,9 +52,9 @@
  * is the difference between a suggestion and a guess.
  */
 import { storage, storageReady } from './xyne';
-import { parseUpdate } from './appUpdate';
+import { parseUpdate } from './origin';
 import { personOf } from './people';
-import { actsOf, type MessageLike } from './provenance';
+import { actsOf, type MessageLike } from './origin';
 import {
   getDetails,
   listActivities,
@@ -1041,7 +1041,7 @@ export async function scan(
   tickets: TicketRow[],
   options: { limit?: number; concurrency?: number; deepen?: number; now?: number; signal?: AbortSignal } = {},
 ): Promise<{ nudges: Nudge[]; examined: number; total: number; deepened: number }> {
-  const { limit = 80, concurrency = 6, deepen = 40, now = Date.now(), signal } = options;
+  const { limit = 150, concurrency = 6, deepen = 60, now = Date.now(), signal } = options;
   const open = tickets.filter(t => !CLOSED.includes((t.statusV2 ?? '') as StatusV2));
   // Oldest first, so a scan that hits the limit spends its budget where staleness
   // actually lives. The list arrives newest-first, and taking the head of that

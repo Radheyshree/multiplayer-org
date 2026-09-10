@@ -19,7 +19,7 @@
  */
 import { Component, useEffect, useMemo, useRef, useState, type ErrorInfo, type ReactNode } from 'react';
 import { c, eyebrow, mono } from '../../lib/theme';
-import { Ring, Shimmer } from './StudioFx';
+import { Ring, Shimmer } from './StudioCode';
 import { evaluateProject, toRuntimeError, type RuntimeError } from '../../lib/studioRuntime';
 import type { StudioFile } from '../../lib/studioProtocol';
 

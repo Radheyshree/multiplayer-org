@@ -12,8 +12,8 @@
  */
 import { useEffect, useState } from 'react';
 import { listAllMessages, listThreads, type ThreadRow } from '../../lib/chat';
-import { Avatar, MessageList } from '../MessageList';
-import { toPreview } from '../RichText';
+import { Avatar, MessageList } from '../shared';
+import { toPreview } from '../shared';
 import { loadDirectory, nameOf, resolvePeople } from '../../lib/people';
 import { c, eyebrow, mono } from '../../lib/theme';
 import type { OrgAppProps } from '../../orgApps/registry';

@@ -37,7 +37,7 @@
  */
 import { xyne } from './xyne';
 import { counterparty } from './origin';
-import { loadMailThread } from './mailthread';
+import { loadMailThread } from './mailbridge';
 
 /** The doc kinds the result transformer actually handles. */
 export type DocType = 'ticket' | 'mail' | 'chat' | 'message' | 'file' | 'call' | 'channel' | 'user' | 'project';

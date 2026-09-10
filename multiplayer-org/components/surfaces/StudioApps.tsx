@@ -13,8 +13,8 @@
  */
 import { useMemo, useState } from 'react';
 import { c, eyebrow, mono } from '../../lib/theme';
-import { riseIn, Shimmer } from './StudioFx';
-import type { StudioProject } from '../../lib/studioStore';
+import { riseIn, Shimmer } from './StudioCode';
+import type { StudioProject } from '../../lib/studioRuntime';
 
 type Sort = 'updated' | 'created' | 'name';
 type Scope = 'mine' | 'recent';

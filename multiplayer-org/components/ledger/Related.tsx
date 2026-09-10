@@ -31,7 +31,7 @@ import {
 } from '../../lib/related';
 import { getDetails } from '../../lib/tickets';
 import { c, eyebrow, mono } from '../../lib/theme';
-import type { WorkItem } from '../../lib/workitem';
+import type { WorkItem } from '../../lib/shell';
 
 function Row({
   hit,

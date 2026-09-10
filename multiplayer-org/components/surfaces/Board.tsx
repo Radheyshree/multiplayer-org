@@ -29,9 +29,9 @@ import {
   loadBoardChoices,
   loadBoardView,
   moveTicket,
-  type Stage as BoardStage,
+  type BoardStage,
   type StageTransition,
-} from '../../lib/kanban';
+} from '../../lib/tickets';
 import { initials, loadDirectory, nameOf, resolvePeople, tintFor } from '../../lib/people';
 import { c, eyebrow, mono, priorityColor } from '../../lib/theme';
 import {
@@ -44,11 +44,11 @@ import {
   type Stage,
   type Ticket,
 } from '../../lib/tickets';
-import { toWorkItem } from '../../lib/workitem';
+import { toWorkItem } from '../../lib/shell';
 import type { OrgAppProps } from '../../orgApps/registry';
 import { xyne } from '../../lib/xyne';
-import { NewTicket } from '../board/NewTicket';
-import { TicketView } from '../board/TicketView';
+import { NewTicket } from '../board/ticket';
+import { TicketView } from '../board/ticket';
 
 type Project = { id: string; name?: string; code?: string };
 type BoardRow = { id: string; name?: string };

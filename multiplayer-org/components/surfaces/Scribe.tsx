@@ -60,16 +60,16 @@ import {
   recordingDetail,
   type RecordingDetail,
   type TranscriptLine,
-} from '../../lib/callsBeyondSdk';
+} from '../../lib/calls';
 import { loadDirectory, nameOf, resolvePeople } from '../../lib/people';
 import { createTicket } from '../../lib/tickets';
 import { c, eyebrow, mono } from '../../lib/theme';
-import { toWorkItem } from '../../lib/workitem';
+import { toWorkItem } from '../../lib/shell';
 import type { OrgAppProps } from '../../orgApps/registry';
-import { Decisions } from '../scribe/Decisions';
-import { Moments } from '../scribe/Moments';
-import { Summary } from '../scribe/Summary';
-import { Transcript } from '../scribe/Transcript';
+import { Decisions } from '../scribe/parts';
+import { Moments } from '../scribe/parts';
+import { Summary } from '../scribe/parts';
+import { Transcript } from '../scribe/parts';
 import { dayOf, duration, Empty, Eyebrow, Faces, Meta, Person, Segmented, when } from '../scribe/parts';
 
 const TABS: Array<{ id: Listing; label: string }> = [

@@ -34,15 +34,15 @@ import {
   type Message,
   type ProjectTree,
   type Ticket,
-} from './lib/org';
+} from './lib/shell';
 import { hasToken } from './lib/xyne';
 import { configureOrigins } from './lib/origin';
-import { recallOrigins } from './lib/mailthread';
+import { recallOrigins } from './lib/mailbridge';
 import { recallCandidates } from './lib/mailbridge';
-import { loadRegistry, type Registry } from './lib/apps';
-import type { WorkItem } from './lib/workitem';
+import { loadRegistry, type Registry } from './lib/shell';
+import type { WorkItem } from './lib/shell';
 import { ORG_APPS } from './orgApps/registry';
-import { ErrorBoundary } from './components/ErrorBoundary';
+import { ErrorBoundary } from './components/shared';
 import { Ledger } from './components/ledger/Ledger';
 import type { LedgerMessage } from './components/ledger/MessageRow';
 import { listAgents, type AgentOption } from './lib/agentrun';
@@ -57,15 +57,15 @@ import { Store } from './components/Store';
 const Studio = lazy(() =>
   import('./components/surfaces/Studio').then((m) => ({ default: m.Studio })),
 );
-import { tagUpdate, parseUpdate, matchesLayer, type Layer } from './lib/appUpdate';
-import { readHistory, recordVisit, clearHistory, type RecentEntry } from './lib/history';
+import { tagUpdate, parseUpdate, matchesLayer, type Layer } from './lib/origin';
+import { readHistory, recordVisit, clearHistory, type RecentEntry } from './lib/shell';
 import { Rail, type RailView } from './components/Rail';
 import { UpdateQueue } from './components/UpdateQueue';
 import { myTickets as loadMyWork } from './lib/tickets';
 import {
   loadDirectory, EMPTY_DIRECTORY, humanize, ago, initials,
   priorityTone, statusTone, type Directory,
-} from './lib/directory';
+} from './lib/shell';
 import { Button } from './components/ui/button';
 import { Badge } from './components/ui/badge';
 import { Input } from './components/ui/input';

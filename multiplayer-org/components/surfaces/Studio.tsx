@@ -45,7 +45,7 @@ import {
   type Invocation,
   type RunProgress,
   type StudioAgent,
-} from '../../lib/studioClaw';
+} from '../../lib/studioProtocol';
 import {
   applyReply,
   buildCreateTask,
@@ -72,15 +72,15 @@ import {
   type Turn,
   type TurnAction,
   type VersionMeta,
-} from '../../lib/studioStore';
-import { buildPayload, createApp, publishApp, pushVersion } from '../../lib/studioDeploy';
+} from '../../lib/studioRuntime';
+import { buildPayload, createApp, publishApp, pushVersion } from '../../lib/studioProtocol';
 import { StudioApps } from './StudioApps';
-import { StudioFx } from './StudioFx';
+import { StudioFx } from './StudioCode';
 import { StudioCode } from './StudioCode';
 import { AgentPicker, StudioHome } from './StudioHome';
 import { StudioPreview } from './StudioPreview';
 import { StudioTimeline } from './StudioTimeline';
-import { StudioVersions, type DeployIntent } from './StudioVersions';
+import { StudioVersions, type DeployIntent } from './StudioCode';
 
 type Tab = 'preview' | 'code' | 'versions';
 

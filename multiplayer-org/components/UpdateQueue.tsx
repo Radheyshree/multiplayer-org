@@ -38,11 +38,11 @@ import {
   type Suggestion,
   type TicketRow,
 } from '../lib/nudge';
-import { mentionHtml } from '../lib/mentions';
+import { mentionHtml } from '../lib/people';
 import { initials, personOf, tintFor } from '../lib/people';
 import { c, eyebrow, mono } from '../lib/theme';
-import { BrandMark } from './ledger/BrandMark';
-import type { WorkItem } from '../lib/workitem';
+import { BrandMark } from './ledger/badges';
+import type { WorkItem } from '../lib/shell';
 import { xyne } from '../lib/xyne';
 
 /** One thread, read at click time so "already asked" is checked against truth. */

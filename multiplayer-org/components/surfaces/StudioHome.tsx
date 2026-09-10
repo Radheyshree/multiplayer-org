@@ -19,10 +19,10 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { c, eyebrow, mono } from '../../lib/theme';
-import type { StudioAgent } from '../../lib/studioClaw';
-import type { StudioProject } from '../../lib/studioStore';
+import type { StudioAgent } from '../../lib/studioProtocol';
+import type { StudioProject } from '../../lib/studioRuntime';
 import { AppGlyph, ago } from './StudioApps';
-import { riseIn, Shimmer } from './StudioFx';
+import { riseIn, Shimmer } from './StudioCode';
 
 type Starter = { glyph: string; title: string; blurb: string; prompt: string; live: boolean };
 

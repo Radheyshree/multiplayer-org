@@ -19,7 +19,7 @@
  * readable rather than a wall of repeated faces.
  */
 import type { ReactNode } from 'react';
-import { parseUpdate, type EntryKind } from '../../lib/appUpdate';
+import { parseUpdate, type EntryKind } from '../../lib/origin';
 import { initials, personByEmail, personOf, tintFor } from '../../lib/people';
 import {
   actsOf,
@@ -31,10 +31,10 @@ import {
   type AppAction,
   type ChannelLike,
   type MessageLike,
-} from '../../lib/provenance';
+} from '../../lib/origin';
 import { c, mono } from '../../lib/theme';
-import { RichText } from '../RichText';
-import { ActBadge, SourceBadge } from './SourceBadge';
+import { RichText } from '../shared';
+import { ActBadge, SourceBadge } from './badges';
 
 /** A message as the ledger needs it. Structural so any read path fits. */
 export interface LedgerMessage extends MessageLike {
