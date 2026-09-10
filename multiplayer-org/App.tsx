@@ -35,7 +35,7 @@ import {
   type ProjectTree,
   type Ticket,
 } from './lib/shell';
-import { hasToken } from './lib/xyne';
+import { canReachSpaces } from './lib/xyne';
 import { configureOrigins } from './lib/origin';
 import { recallOrigins } from './lib/mailbridge';
 import { recallCandidates } from './lib/mailbridge';
@@ -252,7 +252,9 @@ export default function App(): JSX.Element {
 
   // Boot: identity + the org spine.
   useEffect(() => {
-    if (!hasToken) {
+    // `canReachSpaces`, not `hasToken`: the published app holds no token on
+    // purpose and is not broken. See lib/xyne.ts.
+    if (!canReachSpaces) {
       setBootError('No XYNE_TOKEN in .env — run `spaces token` with a workspace open in Chrome.');
       return;
     }

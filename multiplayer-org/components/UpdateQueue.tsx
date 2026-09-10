@@ -43,14 +43,19 @@ import { initials, personOf, tintFor } from '../lib/people';
 import { c, eyebrow, mono } from '../lib/theme';
 import { BrandMark } from './ledger/badges';
 import type { WorkItem } from '../lib/shell';
-import { xyne } from '../lib/xyne';
+import { listAllMessages } from '../lib/chat';
 
-/** One thread, read at click time so "already asked" is checked against truth. */
+/**
+ * One thread, read at click time so "already asked" is checked against truth.
+ *
+ * The WHOLE thread, via the paging read: a single `listByConversation` call
+ * returns a hundred messages and sets `hasMore`, and the ones it leaves out are
+ * the newest — which on this question is every message that could possibly
+ * matter. Missing them means asking somebody the same thing twice.
+ */
 async function threadOf(conversationId: string): Promise<Array<{ content?: string }>> {
   try {
-    const { spaces } = await xyne();
-    const page = await spaces.messages.listByConversation(conversationId, { limit: 100 });
-    return (page as unknown as { items?: Array<{ content?: string }> }).items ?? [];
+    return await listAllMessages(conversationId);
   } catch {
     return [];
   }

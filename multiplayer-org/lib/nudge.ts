@@ -53,6 +53,7 @@
  */
 import { storage, storageReady } from './xyne';
 import { parseUpdate } from './origin';
+import { listAllMessages } from './chat';
 import { personOf } from './people';
 import { actsOf, type MessageLike } from './origin';
 import {
@@ -1106,12 +1107,24 @@ export async function scan(
   return { nudges: found, examined, total: open.length, deepened };
 }
 
+/**
+ * A whole thread, not the first hundred messages of it.
+ *
+ * `listByConversation({limit: 100})` returns the OLDEST hundred and sets
+ * `hasMore` — so on a thread of 108 the eight newest messages are the ones you
+ * do not get, which is exactly backwards for every question this file asks:
+ * when did anyone last speak, is there an unanswered question, has a release
+ * note landed, have we already asked this. Measured on a live thread that had
+ * just crossed the boundary; every one of those went stale at once.
+ *
+ * `listAllMessages` pages by offset until the thread is exhausted. It costs no
+ * more transfer than the naive call for a short thread, because the server
+ * sends the whole conversation either way and the SDK windows it client-side.
+ */
 async function threadOf(conversationId?: string): Promise<ThreadMessage[]> {
   if (!conversationId) return [];
   try {
-    const { spaces } = await xyne();
-    const page = await spaces.messages.listByConversation(conversationId, { limit: 100 });
-    return (page as unknown as { items?: ThreadMessage[] }).items ?? [];
+    return (await listAllMessages(conversationId)) as unknown as ThreadMessage[];
   } catch {
     return [];
   }

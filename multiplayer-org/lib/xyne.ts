@@ -99,7 +99,30 @@ const baseUrl =
     ? location.origin
     : 'http://localhost';
 const token = embedded ? undefined : typeof __XYNE_TOKEN__ !== 'undefined' ? __XYNE_TOKEN__ : undefined;
-const appId = embedded ? '' : typeof __XYNE_APP_ID__ !== 'undefined' ? __XYNE_APP_ID__ : '';
+
+/**
+ * This app's id in Spaces.
+ *
+ * Locally it arrives from .env through a build-time define. PUBLISHED there is
+ * no build step — claw compiles the source as it stands, so `__XYNE_APP_ID__`
+ * does not exist and the guarded typeof yields ''. An empty appId makes
+ * `storageReady` false, which silently switched off every storage-backed
+ * feature in the published app: the ticket watcher, the update agent's
+ * dismissals, the mail bridge's scan index, and the learned Zoho link shape.
+ * Nothing broke visibly; the features just never did anything.
+ *
+ * So the manifest's id is the fallback. It is a constant of THIS app — the same
+ * value `spaces app publish` pushes to — and it has to be repeated here because
+ * xyne.json is the one file the CLI deliberately never uploads. Keep the two in
+ * step; `spaces app init` writing a new id means changing both.
+ *
+ * Storage still works from the sandbox: the SDK posts to
+ * `/claw/api/v1/artifact-app-storage`, which the shim above tunnels to the host,
+ * so the write happens as the viewer with their own cookie.
+ */
+const PUBLISHED_APP_ID = 'cmtsnfbfl16av3i01uzikrabr';
+const appId =
+  (typeof __XYNE_APP_ID__ !== 'undefined' && __XYNE_APP_ID__) || PUBLISHED_APP_ID;
 
 export const spaces: SlimSpacesClient = createClient({ baseUrl, apiKey: token });
 export const storage = new XyneStorageClient({ baseUrl, token: token ?? '', appId });
@@ -157,6 +180,19 @@ export { token };
 
 /** Whether a bearer token was injected (false when embedded — the host's cookie carries auth). */
 export const hasToken = (token ?? '').length > 0;
+
+/**
+ * Whether this app can talk to Spaces at all.
+ *
+ * Two different yeses, and conflating them put the local-dev error screen in
+ * front of every viewer of the published app. Locally the app needs a token in
+ * .env and holds it itself. Published it needs NO token by design — the host
+ * performs every request as the viewer over the postMessage bridge and the app
+ * never holds a credential — so asking only "is there a token?" answers no for
+ * the one case that is working perfectly, and then tells the reader to run
+ * `spaces token`, which is advice nobody inside Spaces can act on.
+ */
+export const canReachSpaces = embedded || hasToken;
 
 /** Whether app-scoped storage is usable; false without an appId. */
 export const storageReady = appId.length > 0;

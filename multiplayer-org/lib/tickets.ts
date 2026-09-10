@@ -258,9 +258,20 @@ export async function getMany(ticketIds: string[]): Promise<Ticket[]> {
   return (await spaces.tickets.getMany(ticketIds)) as unknown as Ticket[];
 }
 
-export async function listActivities(ticketId: string): Promise<Activity[]> {
+/**
+ * A ticket's activity log, newest first.
+ *
+ * `limit` defaults to 200, not 50, and that is load-bearing rather than
+ * generous. The log mixes everything — 235 PR events against 46 status changes
+ * and 37 creations on the tickets this was measured over — so on a ticket that
+ * has been moved around a lot the STATUS rows crowd the PR rows out of a small
+ * window entirely. Observed live: a ticket whose newest 50 activities were all
+ * stage moves reported no pull requests at all, and the update agent went blind
+ * on the one ticket it had most to say about.
+ */
+export async function listActivities(ticketId: string, limit = 200): Promise<Activity[]> {
   const { spaces } = await xyne();
-  const page = await spaces.tickets.listActivities(ticketId, { limit: 50 });
+  const page = await spaces.tickets.listActivities(ticketId, { limit });
   const items = (page as unknown as { items?: Activity[] }).items ?? [];
   return [...items].sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0));
 }
